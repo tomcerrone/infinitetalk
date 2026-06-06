@@ -2,28 +2,27 @@
 """Worker batch InfiniteTalk (pod RunPod).
 
 Boucle : réclame un job à MassContent -> génère (pipeline natif 720p verrouillée via generate.py)
--> upload S3 -> signale la fin. S'auto-termine après inactivité prolongée (zéro gaspillage GPU).
+-> upload S3 (URL presignée PUT) -> signale la fin. S'auto-termine après inactivité
+prolongée (zéro gaspillage GPU). Heartbeat de progression vers MassContent pendant
+la génération (visibilité sans SSH).
 
 Config (env) :
-  MASSCONTENT_BASE_URL   URL de base MassContent (ex https://masscontent.vercel.app)
+  MASSCONTENT_BASE_URL   URL de base MassContent (ex https://masscontent.pro)
   PIPELINE_SECRET        secret d'auth des workers (header x-pipeline-secret)
-  AWS_S3_BUCKET          bucket S3 cible (+ AWS_ACCESS_KEY_ID/SECRET lus par boto3)
-  AWS_S3_REGION          région S3 (defaut eu-west-3)
   IDLE_EXIT_SECONDS      inactivité avant auto-arrêt du pod (defaut 300)
   POLL_EMPTY_SECONDS     délai entre deux réclamations à vide (defaut 10)
   RUNPOD_API_KEY         pour l'auto-terminaison du pod (RunPod fournit RUNPOD_POD_ID)
 """
-import os, sys, time, json, subprocess, urllib.request, traceback
+import os, sys, time, json, subprocess, threading, urllib.request, traceback
 
 MC_URL = os.environ.get("MASSCONTENT_BASE_URL", "").rstrip("/")
 PIPELINE_SECRET = os.environ.get("PIPELINE_SECRET", "")
-S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "")
-S3_REGION = os.environ.get("AWS_S3_REGION", "eu-west-3")
 COMFY = "http://127.0.0.1:8188"
 INPUT_DIR = "/workspace/ComfyUI/input"
 GEN = "/workspace/generate.py"
 IDLE_EXIT_S = int(os.environ.get("IDLE_EXIT_SECONDS", "300"))
 POLL_EMPTY_S = int(os.environ.get("POLL_EMPTY_SECONDS", "10"))
+HEARTBEAT_S = int(os.environ.get("HEARTBEAT_SECONDS", "45"))
 RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 POD_ID = os.environ.get("RUNPOD_POD_ID", "")
 
@@ -65,6 +64,15 @@ def complete(payload):
     return http("POST", f"{MC_URL}/api/workers/runpod/complete", body=payload,
                 headers={"x-pipeline-secret": PIPELINE_SECRET})
 
+def progress(jid, **kw):
+    """Heartbeat best-effort (n'interrompt jamais la génération en cas d'échec réseau)."""
+    try:
+        http("POST", f"{MC_URL}/api/workers/runpod/progress",
+             body={"jobId": jid, **kw},
+             headers={"x-pipeline-secret": PIPELINE_SECRET}, timeout=15)
+    except Exception as e:
+        log("progress err:", e)
+
 def self_terminate():
     if RUNPOD_API_KEY and POD_ID:
         try:
@@ -83,24 +91,51 @@ def process(job):
     img_path = f"{INPUT_DIR}/{vid}.png"
     aud_path = f"{INPUT_DIR}/{vid}.mp3"
     log(f"job {jid} video={vid} {w}x{h}")
+    progress(jid, podId=POD_ID, status="running", note=f"start {w}x{h}")
     urllib.request.urlretrieve(job["imageUrl"], img_path)
     urllib.request.urlretrieve(job["audioUrl"], aud_path)
+    progress(jid, note="assets téléchargés, génération en cours")
     cmd = ["python3", GEN, "--image", f"{vid}.png", "--audio", f"{vid}.mp3",
            "--width", str(w), "--height", str(h), "--prompt", prompt,
            "--prefix", f"it_{vid}"] + GEN_ARGS
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=5400)
-    sys.stdout.write(out.stdout[-2000:])
-    if out.returncode != 0:
-        raise RuntimeError(f"generate rc={out.returncode}: {out.stdout[-400:]} {out.stderr[-400:]}")
+
+    # Popen + lecture stdout en flux : heartbeat périodique (visibilité sans SSH).
+    t0 = time.time()
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, bufsize=1)
+    lines = []
+    last_hb = time.time()
+    for line in p.stdout:
+        lines.append(line.rstrip("\n"))
+        if len(lines) > 500:
+            lines = lines[-500:]
+        if time.time() - last_hb >= HEARTBEAT_S:
+            progress(jid, logsTail="\n".join(lines[-12:]),
+                     note=f"génération {int(time.time()-t0)}s")
+            last_hb = time.time()
+    try:
+        p.wait(timeout=5400)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        raise RuntimeError("generate.py timeout 5400s")
+    full = "\n".join(lines)
+    sys.stdout.write(full[-2000:] + "\n")
+    sys.stdout.flush()
+    if p.returncode != 0:
+        progress(jid, note=f"generate ÉCHEC rc={p.returncode}", logsTail="\n".join(lines[-15:]))
+        raise RuntimeError(f"generate rc={p.returncode}: {full[-500:]}")
+
     path = None
-    for line in out.stdout.splitlines():
+    for line in lines:
         if "DONE in" in line and "->" in line:
             path = line.split("->", 1)[1].strip()
     if not path or not os.path.exists(path):
         raise RuntimeError(f"sortie introuvable: {path}")
-    # Upload via URL presignee PUT fournie par /claim (pas de boto3 ni de
-    # credentials AWS sur le pod ephemere).
+
+    # Upload via URL presignée PUT fournie par /claim (pas de boto3 ni de
+    # credentials AWS sur le pod éphémère).
     key = job["outputKey"]
+    progress(jid, note="upload S3")
     up = subprocess.run(
         ["curl", "-fsS", "-X", "PUT", "-H", "Content-Type: video/mp4",
          "--upload-file", path, job["uploadUrl"]],
@@ -110,9 +145,9 @@ def process(job):
         raise RuntimeError(f"upload S3 echec rc={up.returncode}: {up.stderr[-300:]}")
     url = job.get("outputUrl") or key
     log(f"upload S3 OK -> {key}")
-    for p in (img_path, aud_path, path):
+    for pth in (img_path, aud_path, path):
         try:
-            os.remove(p)
+            os.remove(pth)
         except Exception:
             pass
     return key, url
