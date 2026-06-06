@@ -17,6 +17,16 @@ __pycache__/
 /tmp/
 *.log
 
+# Assets de test perso (ne pas exposer dans un repo public)
+/test-assets/
+*.mp3
+*.MP3
+*.mp4
+*.wav
+
+# Config Claude locale
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db

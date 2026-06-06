@@ -35,9 +35,6 @@ GEN_ARGS = ["--blockswap", "10", "--prefetch", "1", "--shift", "3", "--audio-sca
 DEFAULT_PROMPT = ("a person calmly speaking to the camera, talking naturally to a friend, "
                   "realistic, highly detailed face, sharp")
 
-import boto3
-_s3 = boto3.client("s3", region_name=S3_REGION)
-
 def log(*a):
     print("[worker]", *a, flush=True)
 
@@ -101,9 +98,17 @@ def process(job):
             path = line.split("->", 1)[1].strip()
     if not path or not os.path.exists(path):
         raise RuntimeError(f"sortie introuvable: {path}")
-    key = f"avatar-video/{vid}/infinitetalk.mp4"
-    _s3.upload_file(path, S3_BUCKET, key, ExtraArgs={"ContentType": "video/mp4"})
-    url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{key}"
+    # Upload via URL presignee PUT fournie par /claim (pas de boto3 ni de
+    # credentials AWS sur le pod ephemere).
+    key = job["outputKey"]
+    up = subprocess.run(
+        ["curl", "-fsS", "-X", "PUT", "-H", "Content-Type: video/mp4",
+         "--upload-file", path, job["uploadUrl"]],
+        capture_output=True, text=True,
+    )
+    if up.returncode != 0:
+        raise RuntimeError(f"upload S3 echec rc={up.returncode}: {up.stderr[-300:]}")
+    url = job.get("outputUrl") or key
     log(f"upload S3 OK -> {key}")
     for p in (img_path, aud_path, path):
         try:
@@ -113,8 +118,8 @@ def process(job):
     return key, url
 
 def main():
-    missing = [k for k, v in {"MASSCONTENT_BASE_URL": MC_URL, "PIPELINE_SECRET": PIPELINE_SECRET,
-                              "AWS_S3_BUCKET": S3_BUCKET}.items() if not v]
+    missing = [k for k, v in {"MASSCONTENT_BASE_URL": MC_URL,
+                              "PIPELINE_SECRET": PIPELINE_SECRET}.items() if not v]
     if missing:
         log("config manquante:", ",".join(missing)); sys.exit(2)
     if not wait_comfy():
