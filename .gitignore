@@ -1,0 +1,22 @@
+# Secrets
+.env
+*.env
+!.env.example
+.ssh/
+id_ed25519*
+*.pem
+
+# Node / Python
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# Sorties / temporaire
+/outputs/
+/tmp/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
