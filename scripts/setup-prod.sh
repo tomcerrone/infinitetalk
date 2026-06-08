@@ -72,16 +72,27 @@ clone kijai/ComfyUI-KJNodes
 clone Kosinkadink/ComfyUI-VideoHelperSuite
 clone Fannovel16/ComfyUI-Frame-Interpolation
 
-# 3) SageAttention 2 (compilée dans le venv ; arch 12.0=Blackwell/5090). Placée
-#    AVANT les modèles pour permettre le build d'image custom (IT_ENV_ONLY) sans
-#    embarquer les 33 Go.
-export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.8}"; export PATH="$CUDA_HOME/bin:$PATH"
+# 3) SageAttention 2 (arch 12.0=Blackwell/5090). Placée AVANT les modèles pour le
+#    build d'image custom (IT_ENV_ONLY). La compilation exige un toolkit CUDA dont
+#    la version correspond à celle de PyTorch (sinon "CUDA version mismatch") : on
+#    sélectionne le nvcc qui matche torch (et PAS un /usr/local/cuda-12.8 résiduel).
+TCU="$("$PY" -c 'import torch;print((torch.version.cuda or "").strip())' 2>/dev/null || true)"
+log "torch.cuda=$TCU toolkits=[$(ls -d /usr/local/cuda* 2>/dev/null | tr '\n' ' ')]"
+unset CUDA_HOME
+for c in "/usr/local/cuda-$TCU" "/usr/local/cuda" /usr/local/cuda-*; do
+  [ -x "$c/bin/nvcc" ] || continue
+  NV="$("$c/bin/nvcc" --version 2>/dev/null | grep -oE 'release [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+')"
+  if [ -z "$TCU" ] || [ "$NV" = "$TCU" ]; then export CUDA_HOME="$c"; break; fi
+done
+: "${CUDA_HOME:=/usr/local/cuda}"
+export PATH="$CUDA_HOME/bin:$PATH"
+log "CUDA_HOME=$CUDA_HOME nvcc=$("$CUDA_HOME/bin/nvcc" --version 2>/dev/null | grep -oE 'release [0-9.]+' | head -1)"
 export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH:-12.0}"; export MAX_JOBS="$(nproc)"
-if ! $PY -c "import sageattention" 2>/dev/null; then
-  log "compile SageAttention (arch $TORCH_CUDA_ARCH_LIST)"
-  $PY -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/thu-ml/SageAttention.git" 2>&1 | tail -8 || log "WARN sage build"
+if ! "$PY" -c "import sageattention" 2>/dev/null; then
+  log "compile SageAttention (arch $TORCH_CUDA_ARCH_LIST, cuda=$CUDA_HOME)"
+  "$PY" -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/thu-ml/SageAttention.git" 2>&1 | tail -15 || log "WARN sage build"
 fi
-$PY -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
+"$PY" -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
 
 # Build d'image custom (IT_ENV_ONLY) : ComfyUI + nodes + venv + SageAttention sont
 # prêts -> on s'arrête ici. Les modèles (33 Go) restent téléchargés au runtime
