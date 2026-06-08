@@ -1,14 +1,54 @@
 #!/usr/bin/env bash
 # Provisioning PROD InfiniteTalk natif 720p (sans SeedVR2) : ComfyUI + 4 nodes +
 # 7 modèles (aria2c -x16, reprenable) + SageAttention (arch 12.0 = Blackwell/5090)
-# + démarre ComfyUI. Idempotent (skip ce qui existe déjà → réutilisable sur volume).
+# + démarre ComfyUI. Idempotent (skip ce qui existe déjà).
+#
+# Optim cold-start (network volume) : TOUT s'installe sous /workspace — ComfyUI,
+# modèles, ET un venv Python qui persiste les packages pip (dont SageAttention
+# compilé). Sur un volume réseau monté à /workspace, le 2e boot prend le
+# FAST-PATH (sentinel .provisioned) et démarre ComfyUI en ~1-2 min sans rien
+# réinstaller. Sans volume (disque éphémère), le comportement complet est inchangé.
 set -uo pipefail
 log(){ echo "[setup] $(date +%H:%M:%S) $*"; }
 COMFY=/workspace/ComfyUI
-PY="$(command -v python || command -v python3)"
+VENV=/workspace/venv
+SENTINEL=/workspace/.provisioned
+BASE_PY="$(command -v python3 || command -v python)"
+
+# venv (system-site-packages) sur /workspace = persiste les packages pip entre
+# deux boots tout en héritant de torch/cuda de l'image (pas de réinstall lourde).
+# Si la création échoue, fallback python système : les modèles restent persistés
+# mais SageAttention est recompilé à chaque boot (gain partiel).
+ensure_venv(){
+  [ -x "$VENV/bin/python" ] && return 0
+  log "création venv (system-site-packages) sur le volume"
+  "$BASE_PY" -m venv --system-site-packages "$VENV" 2>/dev/null \
+    || { log "WARN venv indisponible -> python système"; return 1; }
+}
+if ensure_venv; then PY="$VENV/bin/python"; else PY="$BASE_PY"; fi
 log "python=$PY"
+
+# Démarrage ComfyUI détaché (réutilisé par le fast-path ET le setup complet).
+start_comfyui(){
+  pkill -f "main.py --listen" 2>/dev/null; sleep 2
+  cd "$COMFY" && setsid bash -c "exec $PY main.py --listen 0.0.0.0 --port 8188 --use-sage-attention > /workspace/comfyui.log 2>&1" </dev/null & disown
+  for i in $(seq 1 80); do sleep 3; if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then log "COMFY_UP ($((i*3))s)"; return 0; fi; done
+  log "WARN ComfyUI pas up après 240s"; return 1
+}
+model_ok(){ [ -s "$COMFY/models/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors" ]; }
+
+# FAST-PATH : volume déjà provisionné (venv + sage + modèle) -> skip tout le
+# setup, ComfyUI direct (~1-2 min au lieu de ~12 min).
+if [ -f "$SENTINEL" ] && [ "$PY" = "$VENV/bin/python" ] && "$PY" -c "import sageattention" 2>/dev/null && model_ok; then
+  log "FAST-PATH: volume provisionné -> start ComfyUI direct (pas de réinstall)"
+  if start_comfyui; then echo "[setup] SETUP_PROD_DONE (fast-path)"; exit 0; fi
+  log "fast-path KO -> bascule setup complet"
+fi
+
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git ffmpeg aria2 wget curl >/dev/null 2>&1 || log "WARN apt"
+apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git ffmpeg aria2 wget curl python3-venv >/dev/null 2>&1 || log "WARN apt"
+# Réessayer le venv si python3-venv manquait au premier essai.
+if [ "$PY" != "$VENV/bin/python" ] && ensure_venv; then PY="$VENV/bin/python"; log "venv OK après apt -> python=$PY"; fi
 
 # 1) ComfyUI (robuste si dossier pré-existe non-vide)
 if [ ! -d "$COMFY/.git" ]; then
@@ -57,8 +97,13 @@ if ! $PY -c "import sageattention" 2>/dev/null; then
 fi
 $PY -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
 
-# 5) démarrage ComfyUI (détaché)
-pkill -f "main.py --listen" 2>/dev/null; sleep 2
-cd "$COMFY" && setsid bash -c "exec $PY main.py --listen 0.0.0.0 --port 8188 --use-sage-attention > /workspace/comfyui.log 2>&1" </dev/null & disown
-for i in $(seq 1 80); do sleep 3; if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then log "COMFY_UP ($((i*3))s)"; break; fi; done
+# 5) démarrage ComfyUI + sentinel fast-path
+start_comfyui
+# Sentinel : provisioning complet réussi (ComfyUI up + sage importable + modèle
+# présent) -> active le FAST-PATH au prochain boot sur ce volume.
+if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && [ "$PY" = "$VENV/bin/python" ] && "$PY" -c "import sageattention" 2>/dev/null && model_ok; then
+  touch "$SENTINEL"; log "sentinel .provisioned créé -> fast-path actif au prochain boot"
+else
+  log "setup incomplet -> pas de sentinel (le prochain boot refera le setup)"
+fi
 echo "[setup] SETUP_PROD_DONE"

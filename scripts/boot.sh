@@ -22,6 +22,18 @@ terminate_pod(){
     -d "{\"query\":\"mutation{podTerminate(input:{podId:\\\"$RUNPOD_POD_ID\\\"})}\"}" >/dev/null 2>&1
 }
 
+# Mode peuplement du network volume (one-shot) : setup-prod.sh a téléchargé les
+# modèles + créé le venv + compilé SageAttention SOUS /workspace (= sur le volume).
+# On NE lance PAS le worker et on NE coupe PAS le pod (supervision manuelle), pour
+# vérifier le volume avant de le détacher. Lancer un pod avec IT_SETUP_ONLY=1.
+if [ "${IT_SETUP_ONLY:-0}" = "1" ]; then
+  up=down; curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && up=up
+  prov=no; [ -f /workspace/.provisioned ] && prov=yes
+  log "IT_SETUP_ONLY=1 -> peuplement terminé (ComfyUI=$up provisioned=$prov). Pas de worker, sleep 7200."
+  sleep 7200
+  exit 0
+fi
+
 # Garde-fou : sans ComfyUI, le pod ne sert à rien → auto-terminate (zéro GPU gaspillé).
 if ! curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
   log "ComfyUI DOWN après setup -> auto-terminate pod"
