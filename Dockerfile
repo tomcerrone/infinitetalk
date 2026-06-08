@@ -7,7 +7,12 @@
 # il installe ComfyUI + nodes + venv + SageAttention sous /workspace puis s'arrête
 # avant les modèles et le démarrage. Au runtime, boot.sh relance setup-prod.sh qui
 # saute les installs (déjà présents) et ne fait que modèles + démarrage ComfyUI.
-FROM runpod/pytorch:1.0.3-cu1281-torch271-ubuntu2204
+#
+# Base = image PyTorch officielle DEVEL (torch 2.7.1 + CUDA 12.8 COHÉRENTS, nvcc
+# inclus). On n'utilise PAS runpod/pytorch:1.0.3-cu1281 : son torch est compilé
+# cu130 alors que seul le toolkit nvcc 12.8 est présent -> SageAttention ne
+# compile pas dessus ("CUDA version mismatch"). CUDA 12.8 supporte le 5090 (sm_120).
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
 
 # SageAttention cible l'arch Blackwell/5090 (compilation nvcc, sans GPU au build).
 ENV IT_ENV_ONLY=1 \
