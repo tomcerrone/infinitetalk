@@ -72,7 +72,30 @@ clone kijai/ComfyUI-KJNodes
 clone Kosinkadink/ComfyUI-VideoHelperSuite
 clone Fannovel16/ComfyUI-Frame-Interpolation
 
-# 3) modèles via aria2c (multi-connexion, -c reprenable)
+# 3) SageAttention 2 (compilée dans le venv ; arch 12.0=Blackwell/5090). Placée
+#    AVANT les modèles pour permettre le build d'image custom (IT_ENV_ONLY) sans
+#    embarquer les 33 Go.
+export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.8}"; export PATH="$CUDA_HOME/bin:$PATH"
+export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH:-12.0}"; export MAX_JOBS="$(nproc)"
+if ! $PY -c "import sageattention" 2>/dev/null; then
+  log "compile SageAttention (arch $TORCH_CUDA_ARCH_LIST)"
+  $PY -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/thu-ml/SageAttention.git" 2>&1 | tail -8 || log "WARN sage build"
+fi
+$PY -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
+
+# Build d'image custom (IT_ENV_ONLY) : ComfyUI + nodes + venv + SageAttention sont
+# prêts -> on s'arrête ici. Les modèles (33 Go) restent téléchargés au runtime
+# (trop volumineux pour l'image ; un pull de 45 Go serait plus lent qu'un download
+# HF direct). Au runtime, ce setup saute les installs (déjà présents dans l'image)
+# et ne fait que le download des modèles + le démarrage -> cold-start ~2× plus
+# court, sur N'IMPORTE QUEL cloud (Community inclus), sans network volume.
+if [ "${IT_ENV_ONLY:-0}" = "1" ]; then
+  touch /workspace/.env-ready
+  echo "[setup] ENV_ONLY_DONE (image: ComfyUI+venv+sage prêts, sans modèles)"
+  exit 0
+fi
+
+# 4) modèles via aria2c (multi-connexion, -c reprenable)
 M="$COMFY/models"
 mkdir -p "$M/diffusion_models/InfiniteTalk" "$M/text_encoders" "$M/vae" "$M/clip_vision" "$M/loras" "$M/wav2vec2" "$COMFY/input"
 dl(){ # url dest fname
@@ -87,15 +110,6 @@ dl "$HF/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors" "$M/vae" 
 dl "$HF/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors" "$M/clip_vision" "clip_vision_h.safetensors"
 dl "$HF/Kijai/WanVideo_comfy/resolve/main/Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors" "$M/loras" "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
 log "tailles:"; du -sh "$M"/*/ 2>/dev/null
-
-# 4) SageAttention 2 (arch GPU ; 12.0=Blackwell/5090)
-export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda-12.8}"; export PATH="$CUDA_HOME/bin:$PATH"
-export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH:-12.0}"; export MAX_JOBS="$(nproc)"
-if ! $PY -c "import sageattention" 2>/dev/null; then
-  log "compile SageAttention (arch $TORCH_CUDA_ARCH_LIST)"
-  $PY -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/thu-ml/SageAttention.git" 2>&1 | tail -8 || log "WARN sage build"
-fi
-$PY -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
 
 # 5) démarrage ComfyUI + sentinel fast-path
 start_comfyui
