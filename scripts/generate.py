@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """Genere une video InfiniteTalk (image+audio -> 720p 9:16) via l'API ComfyUI locale du Pod.
-Reutilisable : test placeholder, vrais assets FR/ES, et base du workflow prod (worker-comfyui)."""
+Reutilisable : test placeholder, vrais assets FR/ES, et base du workflow prod (worker-comfyui).
+
+NB prod : les DEFAUTS argparse ci-dessous sont des valeurs de test — la pipeline
+prod verrouillee est definie par worker.py (GEN_ARGS) + README (commande de ref).
+La ligne "[gen] DONE in <s>s -> <path>" est PARSEE par worker.py : ne pas changer
+son format sans mettre worker.py a jour."""
 import argparse, json, subprocess, time, urllib.request, sys, uuid, math
 
+# 8188 = port lance par setup-prod.sh (start_comfyui) et expose par MassContent
+# (deployWorkerPod, ports "8188/http") — meme constante dans worker.py (COMFY).
 SERVER = "http://127.0.0.1:8188"
 
 def ffprobe_duration(path):
@@ -106,7 +113,12 @@ def main():
         except Exception as e: print("[gen] poll err", e); continue
         if pid not in h:
             el=int(time.time()-t0); print(f"[gen] ... {el}s", flush=True);
-            if el>5400: print("[gen] TIMEOUT"); sys.exit(3)
+            # 7000s = maillon le plus serré de la chaîne de timeouts, et le plus
+            # PROPRE (sortie rc=3 avec logs). Doit rester > durée max réelle d'une
+            # génération : ~21min pour 45s d'audio sur 5090, ~2× sur GPU lent
+            # (PRO4500) → 7000s couvre ~85s d'audio même sur le plus lent. Ordre à
+            # préserver : generate 7000 < worker.py kill 7200 < watchdog MC 180min.
+            if el>7000: print("[gen] TIMEOUT"); sys.exit(3)
             continue
         entry = h[pid]; st = entry.get("status",{})
         print(f"[gen] status={st.get('status_str')} done={st.get('completed')} ({int(time.time()-t0)}s)")
