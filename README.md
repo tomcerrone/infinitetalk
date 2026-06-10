@@ -16,14 +16,17 @@ immédiatement** sur les prochains pods (pas de pin de version) ; renommer/dépl
 impose de mettre à jour le `DOCKER_START_CMD` côté MassContent.
 
 1. **Orchestrateur = côté MassContent** (`src/lib/runpod/runpod.ts` + cron `runpod-orchestrator`) :
-   crée les pods par l'API REST RunPod **inline** (imageName + ports 8188,8189 + `dockerStartCmd`),
+   crée les pods par l'API REST RunPod **inline** (imageName + port **8189 seul** + `dockerStartCmd`),
    **sans template RunPod** (abandonné : il perdait le dockerStartCmd et son volumeMountPath
    bloquait l'image custom). Le code versionné MassContent est l'unique source de vérité du
    dockerStartCmd et des env injectées (`MASSCONTENT_BASE_URL`, `PIPELINE_SECRET`,
-   `RUNPOD_API_KEY`, `IDLE_EXIT_SECONDS`, `SAGE_ARCH`, overrides `IT_*` par GPU).
-2. **dockerStartCmd** (sur le pod) : lance un **serveur de logs HTTP sur 8189**
-   (`https://<podId>-8189.proxy.runpod.net/` → clone.log / boot.log / comfyui.log / worker.log,
-   pas de SSH nécessaire), clone ce repo, puis exécute `scripts/boot.sh`.
+   `IDLE_EXIT_SECONDS`, `SAGE_ARCH`, overrides `IT_*` par GPU). **PV-003** : plus de
+   `RUNPOD_API_KEY` sur le pod (terminaison via l'endpoint MassContent).
+2. **dockerStartCmd** (sur le pod) : lance un **serveur de logs HTTP sur 8189** servant
+   **uniquement `/workspace/logs`** (`https://<podId>-8189.proxy.runpod.net/` → clone/boot/
+   comfyui/worker.log, pas de SSH). **PV-001** : ni ComfyUI (8188) ni SSH (22) ne sont exposés
+   publiquement, et seuls les logs (pas les assets clients PII) sont servis. Clone ce repo puis
+   exécute `scripts/boot.sh`.
 3. **Chaîne sur le pod** : `boot.sh` → `setup-prod.sh` → `worker.py` → `generate.py` (détail ci-dessous).
 4. **Sortie** : upload S3 via **URL presignée PUT** fournie par MassContent au claim
    (zéro credential AWS sur le pod), puis `/complete` → montage Remotion côté MassContent.
@@ -61,8 +64,8 @@ compilée sm_120 only. **Phase 2 (GPU non-Blackwell : 4090/A6000/L40S)** : l'orc
 | Var | Script(s) | Rôle (défaut) |
 |---|---|---|
 | `MASSCONTENT_BASE_URL` | worker.py, boot.sh | URL MassContent (requis) |
-| `PIPELINE_SECRET` | worker.py | auth header `x-pipeline-secret` (requis) |
-| `RUNPOD_API_KEY` / `RUNPOD_POD_ID` | boot.sh, worker.py | auto-terminate (POD_ID fourni par RunPod) |
+| `PIPELINE_SECRET` | worker.py, boot.sh | auth header `x-pipeline-secret` — claim/complete/progress/terminate (requis) |
+| `RUNPOD_POD_ID` | boot.sh, worker.py | auto-injecté par RunPod ; passé à l'endpoint terminate MassContent (PV-003 : plus de RUNPOD_API_KEY sur le pod) |
 | `IDLE_EXIT_SECONDS` | worker.py | arrêt après inactivité (300 ; l'orchestrateur passe 600) |
 | `POLL_EMPTY_SECONDS` / `HEARTBEAT_SECONDS` | worker.py | poll à vide (10) / heartbeat (45) |
 | `IT_ATTENTION` | setup-prod.sh, worker.py | `sageattn` (défaut) \| `sdpa` (Phase 2 non-Blackwell) |

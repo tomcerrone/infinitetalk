@@ -14,7 +14,8 @@ Config (env, injectée au create du pod par l'orchestrateur MassContent) :
   HEARTBEAT_SECONDS      période du heartbeat /progress pendant la génération (defaut 45)
   IT_ATTENTION           sageattn (defaut) | sdpa (Phase 2, GPU non-Blackwell)
   IT_BLOCKSWAP           blocks à swapper (defaut 10 ; 20 conseillé sur 24 Go)
-  RUNPOD_API_KEY         pour l'auto-terminaison du pod (RunPod fournit RUNPOD_POD_ID)
+  (RUNPOD_POD_ID auto-injecté par RunPod ; l'auto-terminaison passe par l'endpoint
+   MassContent /api/workers/runpod/terminate — plus de RUNPOD_API_KEY sur le pod, PV-003)
 """
 import os, sys, time, json, socket, subprocess, threading, urllib.request, traceback
 
@@ -31,8 +32,7 @@ GEN = "/workspace/generate.py"
 IDLE_EXIT_S = int(os.environ.get("IDLE_EXIT_SECONDS", "300"))
 POLL_EMPTY_S = int(os.environ.get("POLL_EMPTY_SECONDS", "10"))
 HEARTBEAT_S = int(os.environ.get("HEARTBEAT_SECONDS", "45"))
-RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
-POD_ID = os.environ.get("RUNPOD_POD_ID", "")
+POD_ID = os.environ.get("RUNPOD_POD_ID", "")  # auto-injecté par RunPod
 
 # Pipeline natif verrouillée (= réf qualité tom_FINAL). num_frames auto depuis l'audio.
 # IT_ATTENTION/IT_BLOCKSWAP : overrides par pod (env) pour les GPU non-Blackwell
@@ -94,11 +94,16 @@ def progress(jid, **kw):
         log("progress err:", e)
 
 def self_terminate():
-    if RUNPOD_API_KEY and POD_ID:
+    # PV-003 : le pod n'a plus la RUNPOD_API_KEY (clé compte-entier, dangereuse
+    # sur une machine community tierce). Il demande sa terminaison à MassContent
+    # (auth x-pipeline-secret) qui exécute le podTerminate avec sa propre clé.
+    # Le cron orphan-killer reste le filet si cet appel échoue.
+    if MC_URL and POD_ID:
         try:
-            http("POST", f"https://api.runpod.io/graphql?api_key={RUNPOD_API_KEY}",
-                 body={"query": f'mutation {{ podTerminate(input: {{podId: "{POD_ID}"}}) }}'})
-            log("pod auto-terminé:", POD_ID)
+            http("POST", f"{MC_URL}/api/workers/runpod/terminate",
+                 body={"podId": POD_ID},
+                 headers={"x-pipeline-secret": PIPELINE_SECRET}, timeout=15)
+            log("pod auto-terminé (via MassContent):", POD_ID)
         except Exception as e:
             log("auto-terminaison échouée:", e)
 

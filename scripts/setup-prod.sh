@@ -42,9 +42,11 @@ SAGE_FLAG="--use-sage-attention"; [ "$IT_ATTENTION" = "sdpa" ] && SAGE_FLAG=""
 sage_ok(){ [ "$IT_ATTENTION" = "sdpa" ] || "$PY" -c "import sageattention" 2>/dev/null; }
 
 # Démarrage ComfyUI détaché (réutilisé par le fast-path ET le setup complet).
+# comfyui.log sous /workspace/logs (PV-001 : seul dossier servi par le 8189).
 start_comfyui(){
+  mkdir -p /workspace/logs
   pkill -f "main.py --listen" 2>/dev/null; sleep 2
-  cd "$COMFY" && setsid bash -c "exec $PY main.py --listen 0.0.0.0 --port 8188 $SAGE_FLAG > /workspace/comfyui.log 2>&1" </dev/null & disown
+  cd "$COMFY" && setsid bash -c "exec $PY main.py --listen 0.0.0.0 --port 8188 $SAGE_FLAG > /workspace/logs/comfyui.log 2>&1" </dev/null & disown
   for i in $(seq 1 80); do sleep 3; if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then log "COMFY_UP ($((i*3))s)"; return 0; fi; done
   log "WARN ComfyUI pas up après 240s"; return 1
 }
