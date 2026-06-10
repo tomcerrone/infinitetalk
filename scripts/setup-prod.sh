@@ -149,13 +149,20 @@ dl(){ # url dest fname
     [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ] && { log "ok $3"; return 0; }
     log "WARN dl $3 incomplet (essai $i)"; sleep 5
   done
-  # Fallback : hf download gère nativement les URLs Xet (retry intégré). Le repo
-  # et le chemin se déduisent de l'URL HF (.../<repo>/resolve/main/<path>).
+  # Fallback : l'API Python hf_hub_download (retry Xet intégré). On l'invoque via
+  # l'API stable de la lib (≠ le CLI dont le nom de module a changé entre v0
+  # `huggingface_cli` et v1 `hf` — le pod installe la dernière). Le repo et le
+  # chemin se déduisent de l'URL HF (.../<repo>/resolve/main/<path>) ; filename
+  # supporte les sous-dossiers (ex "I2V/Wan2_1-...", "split_files/clip_vision/...").
   local rel="${1#"$HF"/}"; local repo="${rel%%/resolve/*}"; local hfpath="${rel#*/resolve/main/}"
-  log "fallback hf download $repo :: $hfpath"
-  "$PY" -m huggingface_hub.commands.huggingface_cli download "$repo" "$hfpath" \
-    --local-dir "/tmp/hf_$3" >/dev/null 2>&1 && cp -f "/tmp/hf_$3/$hfpath" "$2/$3" \
-    && rm -rf "/tmp/hf_$3" && { log "ok $3 (hf)"; return 0; }
+  log "fallback hf_hub_download $repo :: $hfpath"
+  if "$PY" - "$repo" "$hfpath" "$2/$3" <<'PYEOF' >/dev/null 2>&1
+import sys, shutil
+from huggingface_hub import hf_hub_download
+repo, path, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+shutil.copy(hf_hub_download(repo_id=repo, filename=path), dest)
+PYEOF
+  then [ -s "$2/$3" ] && { log "ok $3 (hf_hub_download)"; return 0; }; fi
   log "ERREUR dl $3 échoué après 3 essais + fallback hf"; return 1; }
 HF=https://huggingface.co
 dl "$HF/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/I2V/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors" "$M/diffusion_models" "Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"
