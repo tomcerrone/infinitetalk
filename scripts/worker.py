@@ -99,20 +99,30 @@ def process(job):
            "--width", str(w), "--height", str(h), "--prompt", prompt,
            "--prefix", f"it_{vid}"] + GEN_ARGS
 
-    # Popen + lecture stdout en flux : heartbeat périodique (visibilité sans SSH).
+    # Popen + lecture stdout en flux (logsTail) + heartbeat sur THREAD dédié :
+    # le signal de vie ne dépend PAS du stdout de generate.py (une phase muette
+    # >20min — tqdm en \r, VAE decode long — ferait tuer un job sain par le
+    # watchdog MassContent qui considère mort tout job silencieux 20min).
     t0 = time.time()
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, bufsize=1)
     lines = []
-    last_hb = time.time()
-    for line in p.stdout:
-        lines.append(line.rstrip("\n"))
-        if len(lines) > 500:
-            lines = lines[-500:]
-        if time.time() - last_hb >= HEARTBEAT_S:
+    done = threading.Event()
+
+    def _heartbeat():
+        while not done.wait(HEARTBEAT_S):
             progress(jid, logsTail="\n".join(lines[-12:]),
                      note=f"génération {int(time.time()-t0)}s")
-            last_hb = time.time()
+
+    hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+    hb_thread.start()
+    try:
+        for line in p.stdout:
+            lines.append(line.rstrip("\n"))
+            if len(lines) > 500:
+                lines = lines[-500:]
+    finally:
+        done.set()
     # 7200s : une vidéo d'1min d'audio prend ~40min sur 5090, potentiellement
     # ~2x sur un GPU plus lent (PRO 4500). Aligné avec le watchdog MassContent
     # (zombie à 180min) : le timeout local tue toujours AVANT le watchdog.
