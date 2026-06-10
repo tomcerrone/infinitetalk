@@ -22,6 +22,10 @@ async function novita() {
     const r = await fetch(`https://api.novita.ai/gpu-instance/openapi/v1/products?billingMethod=${mode}`, {
       headers: { Authorization: `Bearer ${NOVITA}` }, signal: AbortSignal.timeout(15000),
     });
+    // Sans ce check, un 401 (clé expirée) renvoie un JSON sans .data → {} =
+    // indiscernable de "aucun 5090 au catalogue". Ce log alimente une décision
+    // sur 4-5 jours : une erreur DOIT apparaître comme "ERR", pas comme stock 0.
+    if (!r.ok) throw new Error(`Novita HTTP ${r.status}`);
     const j = await r.json();
     for (const p of j.data || []) {
       if (!/5090/i.test(p.name)) continue;
@@ -37,6 +41,7 @@ async function runpod() {
     body: JSON.stringify({ query: `query{ gpuTypes{ id lowestPrice(input:{gpuCount:1}){ stockStatus uninterruptablePrice } } }` }),
     signal: AbortSignal.timeout(15000),
   });
+  if (!r.ok) throw new Error(`RunPod HTTP ${r.status}`);
   const j = await r.json();
   const watch = ["NVIDIA GeForce RTX 5090", "NVIDIA RTX PRO 4500 Blackwell", "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"];
   const out = {};
