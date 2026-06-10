@@ -113,11 +113,14 @@ def process(job):
             progress(jid, logsTail="\n".join(lines[-12:]),
                      note=f"génération {int(time.time()-t0)}s")
             last_hb = time.time()
+    # 7200s : une vidéo d'1min d'audio prend ~40min sur 5090, potentiellement
+    # ~2x sur un GPU plus lent (PRO 4500). Aligné avec le watchdog MassContent
+    # (zombie à 180min) : le timeout local tue toujours AVANT le watchdog.
     try:
-        p.wait(timeout=5400)
+        p.wait(timeout=7200)
     except subprocess.TimeoutExpired:
         p.kill()
-        raise RuntimeError("generate.py timeout 5400s")
+        raise RuntimeError("generate.py timeout 7200s")
     full = "\n".join(lines)
     sys.stdout.write(full[-2000:] + "\n")
     sys.stdout.flush()
@@ -150,7 +153,8 @@ def process(job):
             os.remove(pth)
         except Exception:
             pass
-    return key, url
+    dur_ms = int((time.time() - t0) * 1000)  # durée génération+upload → costUsd côté MassContent
+    return key, url, dur_ms
 
 def main():
     missing = [k for k, v in {"MASSCONTENT_BASE_URL": MC_URL,
@@ -174,10 +178,11 @@ def main():
             time.sleep(POLL_EMPTY_S); continue
         idle = 0
         try:
-            key, url = process(job)
+            key, url, dur_ms = process(job)
             complete({"jobId": job["jobId"], "videoId": job["videoId"],
-                      "status": "completed", "videoS3Key": key, "videoUrl": url})
-            log(f"job {job['jobId']} -> completed")
+                      "status": "completed", "videoS3Key": key, "videoUrl": url,
+                      "durationMs": dur_ms})
+            log(f"job {job['jobId']} -> completed in {dur_ms}ms")
         except Exception as e:
             log("job FAILED:", e, traceback.format_exc()[-600:])
             try:
