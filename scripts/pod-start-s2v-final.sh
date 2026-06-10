@@ -1,4 +1,5 @@
 #!/bin/bash
+# ⚠ LEGACY R&D (piste S2V + SeedVR2, REJETÉE qualité) — NE PAS UTILISER. Prod = boot.sh.
 # Pipeline finale S2V : ComfyUI + S2V + SeedVR2 upscaler + wav2vec FR multilingue. Lance :8188, garde vivant.
 exec > /workspace/provision.log 2>&1
 set -x

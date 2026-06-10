@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Point d'entrée pod PROD (appelé par le dockerStartCmd du template, après clone du repo).
+# Point d'entrée pod PROD. Appelé par le DOCKER_START_CMD défini côté MassContent
+# (masscontent/src/lib/runpod/runpod.ts) qui clone ce repo (main, public) à CHAQUE
+# boot de pod puis lance `bash repo/scripts/boot.sh`. Si tu renommes/déplaces ce
+# fichier ou changes son contrat, MAJ DOCKER_START_CMD dans MassContent.
 # Provisionne ComfyUI + modèles + SageAttention, puis lance le worker en boucle.
-# Tous les secrets/params viennent des ENV injectés par RunPod (pas de worker.env).
+# Tous les secrets/params viennent des ENV injectés par deployWorkerPod
+# (MASSCONTENT_BASE_URL, PIPELINE_SECRET, RUNPOD_API_KEY, SAGE_ARCH,
+# IDLE_EXIT_SECONDS, + IT_ATTENTION/IT_BLOCKSWAP par GPU) — pas de worker.env.
 set -uo pipefail
 log(){ echo "[boot] $(date +%H:%M:%S) $*"; }
 REPO="${IT_REPO_DIR:-/workspace/repo}"

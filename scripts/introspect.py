@@ -1,3 +1,5 @@
+"""Outil dev : dump les schémas d'inputs (required/optional, enums, défauts) des nodes
+ComfyUI utilisés par generate.py, via l'API locale :8188. À lancer sur un pod provisionné."""
 import json, urllib.request
 CLASSES = ["WanVideoModelLoader","MultiTalkModelLoader","WanVideoLoraSelect","WanVideoVAELoader",
            "CLIPVisionLoader","WanVideoTextEncodeCached","Wav2VecModelLoader","DownloadAndLoadWav2VecModel",

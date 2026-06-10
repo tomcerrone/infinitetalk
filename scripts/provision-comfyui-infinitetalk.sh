@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# ⚠ LEGACY R&D — NE PAS UTILISER EN PROD. Remplacé par setup-prod.sh (seule source
+# de vérité du provisioning : liste modèles, venv, SageAttention, fast-path).
+# Gardé comme trace R&D ; sa liste de modèles N'EST PLUS maintenue.
 # InfiniteTalk Single (image+audio -> video 720p 9:16) — provisioning ComfyUI sur RunPod Pod.
 # Base : runpod/pytorch (torch 2.7.1 / cu128). ComfyUI + nodes + modeles sous /workspace. Idempotent.
 set -uo pipefail

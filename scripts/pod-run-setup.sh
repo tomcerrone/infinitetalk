@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ⚠ LEGACY R&D (pipeline IT 480p + SeedVR2, REJETÉE qualité) — NE PAS UTILISER.
+# Prod = boot.sh -> setup-prod.sh. CUDA_HOME hardcodé ici (bug corrigé en prod).
 # Orchestre le setup pod : provisioning (modeles) -> SageAttention -> demarre ComfyUI. Lance en background, loggue dans setup.log.
 exec > /workspace/setup.log 2>&1
 set -x

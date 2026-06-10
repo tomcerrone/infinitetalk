@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ⚠ LEGACY R&D — NE PAS UTILISER EN PROD. Remplacé par setup-prod.sh.
+# Piège connu : CUDA_HOME=/usr/local/cuda-12.8 hardcodé ci-dessous = le bug
+# "CUDA version mismatch" corrigé dans setup-prod.sh (sélection du nvcc qui
+# matche torch). Réutiliser ce script pour un bench = retomber dessus.
 # Setup complet d'un Pod (L40S ou 5090) : ComfyUI + nodes + modeles + SageAttention (arch auto) + demarrage.
 # Usage : SAGE_ARCH=12.0 bash setup-pod.sh   (12.0=Blackwell/5090, 8.9=Ada/L40S)
 set -uo pipefail

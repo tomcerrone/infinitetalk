@@ -1,4 +1,5 @@
 #!/bin/bash
+# ⚠ LEGACY R&D (piste Wan2.2-S2V, REJETÉE qualité) — NE PAS UTILISER. Prod = boot.sh.
 # dockerStartCmd pod Wan2.2-S2V : ComfyUI natif + modeles S2V + Lightning 4-step. Lance :8188, garde vivant.
 exec > /workspace/provision.log 2>&1
 set -x

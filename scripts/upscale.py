@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Upscale SeedVR2 (480p -> 720p, face-aware) + interpolation RIFE -> 720p 50fps.
+"""LEGACY R&D (SeedVR2, REJETE qualite 2026-06) — NE PAS UTILISER EN PROD.
+Upscale SeedVR2 (480p -> 720p, face-aware) + interpolation RIFE -> 720p 50fps.
 Charge une video existante (chemin complet), passe par SeedVR2VideoUpscaler puis RIFE, recombine avec l'audio source.
 API ComfyUI locale du pod (meme pattern que generate.py)."""
 import argparse, json, time, urllib.request, sys, uuid

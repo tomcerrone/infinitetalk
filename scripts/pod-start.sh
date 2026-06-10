@@ -1,4 +1,5 @@
 #!/bin/bash
+# ⚠ LEGACY R&D (piste LTX, ABANDONNÉE) — NE PAS UTILISER. Prod = boot.sh.
 # dockerStartCmd du pod LTX : provisionne ComfyUI + nodes + modeles, lance ComfyUI:8188, garde le conteneur vivant.
 exec > /workspace/provision.log 2>&1
 set -x

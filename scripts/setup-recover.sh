@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# ⚠ LEGACY R&D — NE PAS UTILISER EN PROD (CUDA_HOME hardcodé + liste de modèles
+# partielle non maintenue). En prod, relancer setup-prod.sh (idempotent, reprend
+# les downloads via aria2c -c exactement pareil).
 # Reprise robuste : tue les downloads HF gelés, re-télécharge les poids manquants via aria2c (multi-connexion),
 # compile Sage (arch SAGE_ARCH), démarre ComfyUI. Idempotent.
 set -uo pipefail

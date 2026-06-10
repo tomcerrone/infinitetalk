@@ -25,5 +25,6 @@ RUN chmod +x /tmp/setup-prod.sh && bash /tmp/setup-prod.sh && \
     /workspace/venv/bin/python -c "import sageattention; print('sage OK in image')"
 
 # Réinitialise IT_ENV_ONLY pour le runtime (le full setup doit s'exécuter :
-# modèles + démarrage). Le template RunPod fournit le vrai dockerStartCmd.
+# modèles + démarrage). Le dockerStartCmd réel est fourni INLINE au create du pod
+# par l'orchestrateur MassContent (src/lib/runpod/runpod.ts) — pas de template RunPod.
 ENV IT_ENV_ONLY=0

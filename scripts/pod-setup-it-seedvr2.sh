@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# ⚠ LEGACY R&D (variante 480p + SeedVR2, REJETÉE qualité 2026-06) — NE PAS UTILISER.
+# Prod = setup-prod.sh (sa liste de modèles est LA référence ; celle-ci n'est plus maintenue).
 # Provisioning pod : InfiniteTalk Single + SeedVR2 upscaler (480p->720p). aria2c -x16 (rapide/reprenable). Idempotent.
 set -uo pipefail
 log(){ echo "[prov] $(date +%H:%M:%S) $*"; }
