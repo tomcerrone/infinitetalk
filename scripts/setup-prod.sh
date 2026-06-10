@@ -28,10 +28,18 @@ ensure_venv(){
 if ensure_venv; then PY="$VENV/bin/python"; else PY="$BASE_PY"; fi
 log "python=$PY"
 
+# IT_ATTENTION=sdpa (Phase 2, GPU non-Blackwell : 4090/A6000/L40S) : la sage de
+# l'image est compilée sm_120 only — son kernel crasherait au runtime sur sm_89.
+# En sdpa on ne lance PAS ComfyUI avec --use-sage-attention, on ne build/check
+# PAS sage. Défaut (env absente) = sageattn, comportement strictement identique.
+IT_ATTENTION="${IT_ATTENTION:-sageattn}"
+SAGE_FLAG="--use-sage-attention"; [ "$IT_ATTENTION" = "sdpa" ] && SAGE_FLAG=""
+sage_ok(){ [ "$IT_ATTENTION" = "sdpa" ] || "$PY" -c "import sageattention" 2>/dev/null; }
+
 # Démarrage ComfyUI détaché (réutilisé par le fast-path ET le setup complet).
 start_comfyui(){
   pkill -f "main.py --listen" 2>/dev/null; sleep 2
-  cd "$COMFY" && setsid bash -c "exec $PY main.py --listen 0.0.0.0 --port 8188 --use-sage-attention > /workspace/comfyui.log 2>&1" </dev/null & disown
+  cd "$COMFY" && setsid bash -c "exec $PY main.py --listen 0.0.0.0 --port 8188 $SAGE_FLAG > /workspace/comfyui.log 2>&1" </dev/null & disown
   for i in $(seq 1 80); do sleep 3; if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then log "COMFY_UP ($((i*3))s)"; return 0; fi; done
   log "WARN ComfyUI pas up après 240s"; return 1
 }
@@ -39,7 +47,7 @@ model_ok(){ [ -s "$COMFY/models/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_
 
 # FAST-PATH : volume déjà provisionné (venv + sage + modèle) -> skip tout le
 # setup, ComfyUI direct (~1-2 min au lieu de ~12 min).
-if [ -f "$SENTINEL" ] && [ "$PY" = "$VENV/bin/python" ] && "$PY" -c "import sageattention" 2>/dev/null && model_ok; then
+if [ -f "$SENTINEL" ] && [ "$PY" = "$VENV/bin/python" ] && sage_ok && model_ok; then
   log "FAST-PATH: volume provisionné -> start ComfyUI direct (pas de réinstall)"
   if start_comfyui; then echo "[setup] SETUP_PROD_DONE (fast-path)"; exit 0; fi
   log "fast-path KO -> bascule setup complet"
@@ -88,11 +96,15 @@ done
 export PATH="$CUDA_HOME/bin:$PATH"
 log "CUDA_HOME=$CUDA_HOME nvcc=$("$CUDA_HOME/bin/nvcc" --version 2>/dev/null | grep -oE 'release [0-9.]+' | head -1)"
 export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH:-12.0}"; export MAX_JOBS="$(nproc)"
-if ! "$PY" -c "import sageattention" 2>/dev/null; then
-  log "compile SageAttention (arch $TORCH_CUDA_ARCH_LIST, cuda=$CUDA_HOME)"
-  "$PY" -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/thu-ml/SageAttention.git" 2>&1 | tail -15 || log "WARN sage build"
+if [ "$IT_ATTENTION" = "sdpa" ]; then
+  log "IT_ATTENTION=sdpa -> skip build/check SageAttention (GPU non-Blackwell)"
+else
+  if ! "$PY" -c "import sageattention" 2>/dev/null; then
+    log "compile SageAttention (arch $TORCH_CUDA_ARCH_LIST, cuda=$CUDA_HOME)"
+    "$PY" -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/thu-ml/SageAttention.git" 2>&1 | tail -15 || log "WARN sage build"
+  fi
+  "$PY" -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
 fi
-"$PY" -c "import sageattention; print('[setup] SAGE import OK')" 2>&1 | tail -1
 
 # Build d'image custom (IT_ENV_ONLY) : ComfyUI + nodes + venv + SageAttention sont
 # prêts -> on s'arrête ici. Les modèles (33 Go) restent téléchargés au runtime
@@ -126,7 +138,7 @@ log "tailles:"; du -sh "$M"/*/ 2>/dev/null
 start_comfyui
 # Sentinel : provisioning complet réussi (ComfyUI up + sage importable + modèle
 # présent) -> active le FAST-PATH au prochain boot sur ce volume.
-if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && [ "$PY" = "$VENV/bin/python" ] && "$PY" -c "import sageattention" 2>/dev/null && model_ok; then
+if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && [ "$PY" = "$VENV/bin/python" ] && sage_ok && model_ok; then
   touch "$SENTINEL"; log "sentinel .provisioned créé -> fast-path actif au prochain boot"
 else
   log "setup incomplet -> pas de sentinel (le prochain boot refera le setup)"

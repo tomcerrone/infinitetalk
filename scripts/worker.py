@@ -27,8 +27,13 @@ RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 POD_ID = os.environ.get("RUNPOD_POD_ID", "")
 
 # Pipeline natif verrouillée (= réf qualité tom_FINAL). num_frames auto depuis l'audio.
-GEN_ARGS = ["--blockswap", "10", "--prefetch", "1", "--shift", "3", "--audio-scale", "1.0",
-            "--attention", "sageattn", "--steps", "4", "--rife", "2", "--colormatch", "mkl",
+# IT_ATTENTION/IT_BLOCKSWAP : overrides par pod (env) pour les GPU non-Blackwell
+# (Phase 2 : sdpa sur 4090/A6000 — la sage de l'image est compilée sm_120 only)
+# et les VRAM plus petites (4090 24Go → blockswap 20). Défauts = pipeline réf.
+ATTENTION = os.environ.get("IT_ATTENTION", "sageattn")
+BLOCKSWAP = os.environ.get("IT_BLOCKSWAP", "10")
+GEN_ARGS = ["--blockswap", BLOCKSWAP, "--prefetch", "1", "--shift", "3", "--audio-scale", "1.0",
+            "--attention", ATTENTION, "--steps", "4", "--rife", "2", "--colormatch", "mkl",
             "--scheduler", "euler",
             "--base-model", "Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"]
 DEFAULT_PROMPT = ("a person calmly speaking to the camera, talking naturally to a friend, "
