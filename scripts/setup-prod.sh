@@ -8,6 +8,11 @@
 # compilé). Sur un volume réseau monté à /workspace, le 2e boot prend le
 # FAST-PATH (sentinel .provisioned) et démarre ComfyUI en ~1-2 min sans rien
 # réinstaller. Sans volume (disque éphémère), le comportement complet est inchangé.
+#
+# ⚠ DOUBLE EFFET d'un push qui modifie ce fichier : (1) rebuild de l'image custom
+# ghcr (workflow .github/workflows/build-image.yml, mode IT_ENV_ONLY) ; (2) les
+# pods prod exécutent main à CHAQUE boot (DOCKER_START_CMD côté MassContent clone
+# le repo) → tout changement part en prod immédiatement, sans pin de version.
 set -uo pipefail
 log(){ echo "[setup] $(date +%H:%M:%S) $*"; }
 COMFY=/workspace/ComfyUI
@@ -43,7 +48,9 @@ start_comfyui(){
   for i in $(seq 1 80); do sleep 3; if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then log "COMFY_UP ($((i*3))s)"; return 0; fi; done
   log "WARN ComfyUI pas up après 240s"; return 1
 }
-model_ok(){ [ -s "$COMFY/models/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors" ]; }
+# Sentinel modèle de base (même fichier que --base-model de worker.py/generate.py
+# et que le dl section 4 — garder les 4 occurrences synchrones si on change de modèle).
+model_ok(){ local f="$COMFY/models/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"; [ -s "$f" ] && [ ! -f "$f.aria2" ]; }
 
 # FAST-PATH : volume déjà provisionné (venv + sage + modèle) -> skip tout le
 # setup, ComfyUI direct (~1-2 min au lieu de ~12 min).
@@ -119,11 +126,37 @@ if [ "${IT_ENV_ONLY:-0}" = "1" ]; then
 fi
 
 # 4) modèles via aria2c (multi-connexion, -c reprenable)
+# ⚠ Ces noms de fichiers sont consommés tels quels par generate.py (build_graph)
+# et worker.py (GEN_ARGS --base-model) ; model_ok() (plus haut) vérifie le modèle
+# de base pour le fast-path. Si tu changes un modèle ici : MAJ generate.py +
+# worker.py + model_ok() + la commande de réf du README.
 M="$COMFY/models"
 mkdir -p "$M/diffusion_models/InfiniteTalk" "$M/text_encoders" "$M/vae" "$M/clip_vision" "$M/loras" "$M/wav2vec2" "$COMFY/input"
+# dl : télécharge avec aria2c (multi-connexion, reprenable), retry x3 + fallback
+# hf. PIÈGE corrigé : aria2c préalloue la taille FINALE dès le début → un download
+# coupé (403 Xet, fréquents à l'échelle quand 12 pods tapent HF) laisse un fichier
+# de taille pleine MAIS corrompu + un .aria2 à côté. L'ancien check `[ -s ]` le
+# validait → ComfyUI démarre (lazy-load) → generate.py échoue au chargement → pod
+# "empoisonné" qui enchaîne les jobs FAILED. On considère donc un fichier non
+# fini (présence du .aria2) comme absent, et on retente / bascule sur hf download
+# (client officiel, retry Xet intégré).
 dl(){ # url dest fname
-  [ -s "$2/$3" ] && { log "skip $3 ($(du -h "$2/$3"|cut -f1))"; return 0; }
-  log "dl $3"; aria2c -x16 -s16 -c --summary-interval=0 --console-log-level=warn -d "$2" -o "$3" "$1" && log "ok $3" || log "WARN dl $3"; }
+  [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ] && { log "skip $3 ($(du -h "$2/$3"|cut -f1))"; return 0; }
+  local i
+  for i in 1 2 3; do
+    log "dl $3 (essai $i)"
+    aria2c -x16 -s16 -c --summary-interval=0 --console-log-level=warn -d "$2" -o "$3" "$1"
+    [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ] && { log "ok $3"; return 0; }
+    log "WARN dl $3 incomplet (essai $i)"; sleep 5
+  done
+  # Fallback : hf download gère nativement les URLs Xet (retry intégré). Le repo
+  # et le chemin se déduisent de l'URL HF (.../<repo>/resolve/main/<path>).
+  local rel="${1#"$HF"/}"; local repo="${rel%%/resolve/*}"; local hfpath="${rel#*/resolve/main/}"
+  log "fallback hf download $repo :: $hfpath"
+  "$PY" -m huggingface_hub.commands.huggingface_cli download "$repo" "$hfpath" \
+    --local-dir "/tmp/hf_$3" >/dev/null 2>&1 && cp -f "/tmp/hf_$3/$hfpath" "$2/$3" \
+    && rm -rf "/tmp/hf_$3" && { log "ok $3 (hf)"; return 0; }
+  log "ERREUR dl $3 échoué après 3 essais + fallback hf"; return 1; }
 HF=https://huggingface.co
 dl "$HF/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/I2V/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors" "$M/diffusion_models" "Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"
 dl "$HF/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors" "$M/diffusion_models/InfiniteTalk" "Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors"
