@@ -1,7 +1,8 @@
 # InfiniteTalk — Service vidéo talking-head pour MassContent
 
-Service auto-hébergé (RunPod) qui anime **une image + un audio → vidéo 720p talking-head**,
-en remplacement de HeyGen dans la pipeline MassContent.
+Service auto-hébergé (RunPod) qui anime **une image + un audio → vidéo 720p talking-head**.
+Seul moteur avatar de la pipeline MassContent depuis le 2026-06-11 (a remplacé HeyGen,
+entièrement supprimé de MassContent à cette date).
 
 ## État (2026-06-10) : PROD ACTIVE — validée E2E à l'échelle
 - ✅ Qualité, lip-sync, stabilité couleur, naturel du mouvement : validés par Tom.
