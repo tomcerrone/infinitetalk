@@ -36,9 +36,12 @@ async function novita() {
 }
 
 async function runpod() {
+  // uninterruptablePrice = on-demand ; minimumBidPrice = SPOT/interruptible (le
+  // levier "~½ prix" qu'on évalue, Tom 2026-06-11). On logge les deux + le stock
+  // pour mesurer sur plusieurs jours si le spot 5090 est dispo et à quel prix.
   const r = await fetch(`https://api.runpod.io/graphql?api_key=${RUNPOD}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query: `query{ gpuTypes{ id lowestPrice(input:{gpuCount:1}){ stockStatus uninterruptablePrice } } }` }),
+    body: JSON.stringify({ query: `query{ gpuTypes{ id lowestPrice(input:{gpuCount:1}){ stockStatus uninterruptablePrice minimumBidPrice } } }` }),
     signal: AbortSignal.timeout(15000),
   });
   if (!r.ok) throw new Error(`RunPod HTTP ${r.status}`);
@@ -48,8 +51,9 @@ async function runpod() {
   for (const g of j?.data?.gpuTypes || []) {
     if (!watch.includes(g.id)) continue;
     const lp = g.lowestPrice || {};
+    // format : "<stock>:od=<onDemand>:spot=<bid>"
     out[g.id.replace("NVIDIA ", "").replace(" Blackwell", "").replace(" Workstation Edition", "")] =
-      `${lp.stockStatus || "none"}:${lp.uninterruptablePrice ?? "-"}`;
+      `${lp.stockStatus || "none"}:od=${lp.uninterruptablePrice ?? "-"}:spot=${lp.minimumBidPrice ?? "-"}`;
   }
   return out;
 }
