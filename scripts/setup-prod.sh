@@ -54,11 +54,32 @@ start_comfyui(){
 # et que le dl section 4 — garder les 4 occurrences synchrones si on change de modèle).
 model_ok(){ local f="$COMFY/models/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"; [ -s "$f" ] && [ ! -f "$f.aria2" ]; }
 
+# Gate des 7 modèles : présents, download fini (pas de .aria2) ET taille >= plancher
+# (détecte un fichier tronqué par 403 Xet / disque plein). Planchers à ~60% du réel
+# pour zéro faux négatif. setup-prod.sh écrit /workspace/.models-ok seulement si OK ;
+# boot.sh auto-terminate le pod si la sentinelle manque (évite un "pod empoisonné"
+# qui claim des jobs voués à échouer faute de modèles — cf. zombie 5090 2026-06-13).
+models_present(){
+  local M="$COMFY/models" ok=0
+  _m(){ [ -s "$1" ] && [ ! -f "$1.aria2" ] && [ "$(stat -c%s "$1" 2>/dev/null || echo 0)" -ge "$2" ] || { log "MODEL_MISSING $1"; ok=1; }; }
+  _m "$M/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"                       14000000000
+  _m "$M/diffusion_models/InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors"    1000000000
+  _m "$M/wav2vec2/wav2vec2-chinese-base_fp16.safetensors"                                               100000000
+  _m "$M/text_encoders/umt5-xxl-enc-bf16.safetensors"                                                  5000000000
+  _m "$M/vae/Wan2_1_VAE_bf16.safetensors"                                                               100000000
+  _m "$M/clip_vision/clip_vision_h.safetensors"                                                        1000000000
+  _m "$M/loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"                          100000000
+  return $ok
+}
+
 # FAST-PATH : volume déjà provisionné (venv + sage + modèle) -> skip tout le
 # setup, ComfyUI direct (~1-2 min au lieu de ~12 min).
 if [ -f "$SENTINEL" ] && [ "$PY" = "$VENV/bin/python" ] && sage_ok && model_ok; then
   log "FAST-PATH: volume provisionné -> start ComfyUI direct (pas de réinstall)"
-  if start_comfyui; then echo "[setup] SETUP_PROD_DONE (fast-path)"; exit 0; fi
+  if start_comfyui; then
+    if models_present; then touch /workspace/.models-ok; else rm -f /workspace/.models-ok; fi
+    echo "[setup] SETUP_PROD_DONE (fast-path)"; exit 0
+  fi
   log "fast-path KO -> bascule setup complet"
 fi
 
@@ -78,7 +99,10 @@ if [ ! -d "$COMFY/.git" ]; then
   fi
 fi
 $PY -m pip install --no-cache-dir -q -r "$COMFY/requirements.txt" || log "WARN comfy reqs"
-$PY -m pip install --no-cache-dir -q "huggingface_hub[cli]" safetensors || true
+# hf_xet : binaire Rust du transfert Xet. HF a retiré hf_transfer ; SANS hf_xet, le
+# fallback hf_hub_download retombe en HTTP LFS mono-flux LENT (cause n°1 du boot lent).
+# Installé DANS le venv ($PY = celui qui exécute le fallback). >=0.32 embarque hf_xet.
+$PY -m pip install --no-cache-dir -q "huggingface_hub[cli,hf_xet]>=0.32" safetensors || true
 
 # 2) custom nodes (natif : WanVideoWrapper + KJNodes + VideoHelperSuite + Frame-Interpolation/RIFE)
 ND="$COMFY/custom_nodes"; mkdir -p "$ND"
@@ -162,7 +186,7 @@ dl(){ # url dest fname
   # supporte les sous-dossiers (ex "I2V/Wan2_1-...", "split_files/clip_vision/...").
   local rel="${1#"$HF"/}"; local repo="${rel%%/resolve/*}"; local hfpath="${rel#*/resolve/main/}"
   log "fallback hf_hub_download $repo :: $hfpath"
-  if "$PY" - "$repo" "$hfpath" "$2/$3" <<'PYEOF' >/dev/null 2>&1
+  if "$PY" - "$repo" "$hfpath" "$2/$3" <<'PYEOF'
 import sys, shutil
 from huggingface_hub import hf_hub_download
 repo, path, dest = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -179,6 +203,9 @@ dl "$HF/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors" "$M/vae" 
 dl "$HF/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors" "$M/clip_vision" "clip_vision_h.safetensors"
 dl "$HF/Kijai/WanVideo_comfy/resolve/main/Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors" "$M/loras" "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
 log "tailles:"; du -sh "$M"/*/ 2>/dev/null
+
+# Gate des 7 modèles -> sentinelle lue par boot.sh (auto-terminate si absente).
+if models_present; then touch /workspace/.models-ok; log ".models-ok écrit (7 modèles présents)"; else rm -f /workspace/.models-ok; log "WARN modèles incomplets -> PAS de .models-ok (boot.sh coupera le pod)"; fi
 
 # 5) démarrage ComfyUI + sentinel fast-path
 start_comfyui

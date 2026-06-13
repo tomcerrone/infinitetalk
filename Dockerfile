@@ -22,7 +22,8 @@ ENV IT_ENV_ONLY=1 \
 COPY scripts/setup-prod.sh /tmp/setup-prod.sh
 RUN chmod +x /tmp/setup-prod.sh && bash /tmp/setup-prod.sh && \
     test -f /workspace/.env-ready && \
-    /workspace/venv/bin/python -c "import sageattention; print('sage OK in image')"
+    /workspace/venv/bin/python -c "import sageattention; print('sage OK in image')" && \
+    /workspace/venv/bin/python -c "import hf_xet; print('hf_xet OK in image')"
 
 # Réinitialise IT_ENV_ONLY pour le runtime (le full setup doit s'exécuter :
 # modèles + démarrage). Le dockerStartCmd réel est fourni INLINE au create du pod

@@ -24,18 +24,27 @@ log "env: SECRET=$([ -n "${PIPELINE_SECRET:-}" ] && echo set || echo MISSING) PO
 cp -f "$REPO/scripts/worker.py" /workspace/worker.py
 cp -f "$REPO/scripts/generate.py" /workspace/generate.py
 
-# Provisioning idempotent — UNE fois (skip ce qui existe déjà → réutilisable si network volume v2).
-SAGE_ARCH="${SAGE_ARCH:-12.0}" bash "$REPO/scripts/setup-prod.sh" || log "WARN setup rc=$?"
-
 # PV-003 : auto-terminaison via l'endpoint MassContent (le pod n'a plus la clé
 # RunPod compte-entier). Auth par PIPELINE_SECRET (déjà sur le pod) ; c'est le
 # serveur qui exécute le podTerminate. Le cron orphan-killer reste le filet.
+# Défini AVANT le provisioning pour être appelable par le garde-fou timeout.
 terminate_pod(){
   [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ] && curl -s -X POST \
     "${MASSCONTENT_BASE_URL%/}/api/workers/runpod/terminate" -H "Content-Type: application/json" \
     -H "x-pipeline-secret: ${PIPELINE_SECRET:-}" \
     -d "{\"podId\":\"$RUNPOD_POD_ID\"}" >/dev/null 2>&1
 }
+
+# Provisioning idempotent — UNE fois (skip ce qui existe déjà → réutilisable si
+# network volume v2). Borné à 30 min : un hang de download (Xet cross-host connu)
+# ne doit pas brûler le GPU indéfiniment. rc 124 = timeout dépassé → auto-terminate.
+SAGE_ARCH="${SAGE_ARCH:-12.0}" timeout 1800 bash "$REPO/scripts/setup-prod.sh"
+setup_rc=$?
+if [ "$setup_rc" = "124" ]; then
+  log "setup-prod.sh TIMEOUT 1800s (hang download probable) -> auto-terminate"
+  terminate_pod; sleep 3600; exit 1
+fi
+[ "$setup_rc" != "0" ] && log "WARN setup rc=$setup_rc"
 
 # Mode peuplement du network volume (one-shot) : setup-prod.sh a téléchargé les
 # modèles + créé le venv + compilé SageAttention SOUS /workspace (= sur le volume).
@@ -54,6 +63,17 @@ if ! curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
   log "ComfyUI DOWN après setup -> auto-terminate pod"
   terminate_pod
   sleep 3600  # filet anti restart-loop si la coupe échoue (le cron coupe aussi)
+  exit 1
+fi
+
+# Gate modèles : setup-prod.sh écrit /workspace/.models-ok seulement si les 7
+# modèles sont présents et non tronqués. Absente = provisioning incomplet (403 Xet,
+# disque plein, hang download) → le pod claimerait des jobs voués à échouer ("pod
+# empoisonné", cf. zombie 5090 du 2026-06-13). On coupe au lieu de gaspiller le GPU.
+if [ ! -f /workspace/.models-ok ]; then
+  log "modèles absents/incomplets (.models-ok manquant) -> auto-terminate"
+  terminate_pod
+  sleep 3600
   exit 1
 fi
 
