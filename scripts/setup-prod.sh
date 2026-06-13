@@ -142,12 +142,19 @@ mkdir -p "$M/diffusion_models/InfiniteTalk" "$M/text_encoders" "$M/vae" "$M/clip
 # "empoisonné" qui enchaîne les jobs FAILED. On considère donc un fichier non
 # fini (présence du .aria2) comme absent, et on retente / bascule sur hf download
 # (client officiel, retry Xet intégré).
+# Header d'auth HF pour aria2c → download des modèles AUTHENTIFIÉ (évite le bridage
+# des pulls anonymes / 403 Xet "fréquents à l'échelle quand 12 pods tapent HF" ;
+# même classe de panne que le pull image ghcr anonyme, incident 2026-06-13). Array
+# (et non string) pour préserver l'espace dans la valeur du header. Le fallback
+# hf_hub_download lit HF_TOKEN de l'env tout seul. Sans HF_TOKEN : comportement
+# anonyme inchangé (rétrocompat).
+HF_HDR=(); [ -n "${HF_TOKEN:-}" ] && HF_HDR=("--header=Authorization: Bearer $HF_TOKEN")
 dl(){ # url dest fname
   [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ] && { log "skip $3 ($(du -h "$2/$3"|cut -f1))"; return 0; }
   local i
   for i in 1 2 3; do
     log "dl $3 (essai $i)"
-    aria2c -x16 -s16 -c --summary-interval=0 --console-log-level=warn -d "$2" -o "$3" "$1"
+    aria2c -x16 -s16 -c --summary-interval=0 --console-log-level=warn "${HF_HDR[@]}" -d "$2" -o "$3" "$1"
     [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ] && { log "ok $3"; return 0; }
     log "WARN dl $3 incomplet (essai $i)"; sleep 5
   done
