@@ -28,11 +28,21 @@ cp -f "$REPO/scripts/generate.py" /workspace/generate.py
 # RunPod compte-entier). Auth par PIPELINE_SECRET (déjà sur le pod) ; c'est le
 # serveur qui exécute le podTerminate. Le cron orphan-killer reste le filet.
 # Défini AVANT le provisioning pour être appelable par le garde-fou timeout.
+#
+# Multi-provider : Vast injecte CONTAINER_ID (= instance id pour le DELETE Vast).
+# On en déduit le provider + l'id à terminer, comme worker.py :
+#  - Vast   : id=CONTAINER_ID, provider=vast → DELETE /instances/{id}/ côté serveur
+#  - RunPod : id=RUNPOD_POD_ID, provider=runpod (comportement historique inchangé)
+# Ce filet boot.sh n'est sollicité que si le worker n'a pas (encore) pu se couper
+# (setup KO / ComfyUI down) ; le scale-down de secours de l'orchestrateur rattrape
+# de toute façon les pods/instances orphelins via leur label it-worker.
 terminate_pod(){
-  [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ] && curl -s -X POST \
+  local _id="${CONTAINER_ID:-${RUNPOD_POD_ID:-}}"
+  local _prov="runpod"; [ -n "${CONTAINER_ID:-}" ] && _prov="vast"
+  [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "$_id" ] && curl -s -X POST \
     "${MASSCONTENT_BASE_URL%/}/api/workers/runpod/terminate" -H "Content-Type: application/json" \
     -H "x-pipeline-secret: ${PIPELINE_SECRET:-}" \
-    -d "{\"podId\":\"$RUNPOD_POD_ID\"}" >/dev/null 2>&1
+    -d "{\"podId\":\"$_id\",\"provider\":\"$_prov\"}" >/dev/null 2>&1
 }
 
 # Provisioning idempotent — UNE fois (skip ce qui existe déjà → réutilisable si

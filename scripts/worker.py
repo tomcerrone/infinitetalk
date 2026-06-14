@@ -32,7 +32,17 @@ GEN = "/workspace/generate.py"
 IDLE_EXIT_S = int(os.environ.get("IDLE_EXIT_SECONDS", "300"))
 POLL_EMPTY_S = int(os.environ.get("POLL_EMPTY_SECONDS", "10"))
 HEARTBEAT_S = int(os.environ.get("HEARTBEAT_SECONDS", "45"))
-POD_ID = os.environ.get("RUNPOD_POD_ID", "")  # auto-injecté par RunPod
+# Détection du fournisseur GPU. Vast.ai injecte CONTAINER_ID = l'id natif de
+# l'instance (= celui utilisé par DELETE /instances/{id}/ côté MassContent), tandis
+# que RunPod injecte RUNPOD_POD_ID. On en déduit le provider ET le POD_ID :
+#  - sur Vast : POD_ID = CONTAINER_ID (l'instance id réel — c'est lui qui doit
+#    partir à /terminate pour que le DELETE Vast vise la bonne instance ; le label
+#    mis en fallback dans RUNPOD_POD_ID ne servirait pas au DELETE).
+#  - sur RunPod : CONTAINER_ID absent → POD_ID = RUNPOD_POD_ID, PROVIDER "runpod"
+#    (comportement strictement identique à avant l'intégration Vast).
+VAST = os.environ.get("CONTAINER_ID", "")
+PROVIDER = "vast" if VAST else "runpod"
+POD_ID = VAST or os.environ.get("RUNPOD_POD_ID", "")
 
 # Pipeline natif verrouillée (= réf qualité tom_FINAL). num_frames auto depuis l'audio.
 # IT_ATTENTION/IT_BLOCKSWAP : overrides par pod (env) pour les GPU non-Blackwell
@@ -87,8 +97,10 @@ def complete(payload):
 def progress(jid, **kw):
     """Heartbeat best-effort (n'interrompt jamais la génération en cas d'échec réseau)."""
     try:
+        # provider transmis sur chaque heartbeat (avec le podId déjà posté au
+        # 1er progress) → MassContent persiste le bon backend sur le RunPodJob.
         http("POST", f"{MC_URL}/api/workers/runpod/progress",
-             body={"jobId": jid, **kw},
+             body={"jobId": jid, "provider": PROVIDER, **kw},
              headers={"x-pipeline-secret": PIPELINE_SECRET}, timeout=15)
     except Exception as e:
         log("progress err:", e)
@@ -100,10 +112,12 @@ def self_terminate():
     # Le cron orphan-killer reste le filet si cet appel échoue.
     if MC_URL and POD_ID:
         try:
+            # provider → MassContent route vers le bon backend (podTerminate RunPod
+            # ou DELETE /instances/{id}/ Vast). Défaut serveur "runpod" si omis.
             http("POST", f"{MC_URL}/api/workers/runpod/terminate",
-                 body={"podId": POD_ID},
+                 body={"podId": POD_ID, "provider": PROVIDER},
                  headers={"x-pipeline-secret": PIPELINE_SECRET}, timeout=15)
-            log("pod auto-terminé (via MassContent):", POD_ID)
+            log(f"pod auto-terminé (via MassContent, provider={PROVIDER}):", POD_ID)
         except Exception as e:
             log("auto-terminaison échouée:", e)
 
