@@ -168,6 +168,20 @@ mkdir -p "$M/diffusion_models/InfiniteTalk" "$M/text_encoders" "$M/vae" "$M/clip
 # (client officiel, retry Xet intégré).
 dl(){ # url dest fname
   [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ] && { log "skip $3 ($(du -h "$2/$3"|cut -f1))"; return 0; }
+  # Miroir R2 d'abord : egress gratuit, accessible depuis n'importe quel fournisseur
+  # GPU, indépendant des bridages HF/Xet. Clé R2 = chemin relatif à $M (= arbo
+  # ComfyUI/models, identique à mirror-to-r2.sh). -m1 + connect-timeout = fast-fail
+  # si R2 pas encore peuplé (404) ou injoignable -> on bascule sur HF sans ralentir.
+  if [ -n "${MIRROR_BASE:-}" ]; then
+    local r2key="${2#"$M"/}/$3"
+    log "dl $3 (miroir R2)"
+    if aria2c -x16 -s16 -m1 --connect-timeout=15 -c --summary-interval=0 --console-log-level=warn -d "$2" -o "$3" "${MIRROR_BASE%/}/$r2key" 2>/dev/null \
+       && [ -s "$2/$3" ] && [ ! -f "$2/$3.aria2" ]; then
+      log "ok $3 (miroir R2)"; return 0
+    fi
+    rm -f "$2/$3" "$2/$3.aria2" 2>/dev/null || true
+    log "miroir R2 absent/incomplet $3 -> fallback HF"
+  fi
   local i
   for i in 1 2 3; do
     log "dl $3 (essai $i)"
@@ -195,6 +209,9 @@ PYEOF
   then [ -s "$2/$3" ] && { log "ok $3 (hf_hub_download)"; return 0; }; fi
   log "ERREUR dl $3 échoué après 3 essais + fallback hf"; return 1; }
 HF=https://huggingface.co
+# Miroir R2 public (bucket masscontent-models) : source PRIORITAIRE des modèles,
+# essayée avant HF par dl(). Override via env MIRROR_BASE="" pour forcer HF only.
+MIRROR_BASE="${MIRROR_BASE:-https://pub-e4a7d8d06ea842bfab58f6e736387e6a.r2.dev}"
 dl "$HF/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/I2V/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors" "$M/diffusion_models" "Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"
 dl "$HF/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors" "$M/diffusion_models/InfiniteTalk" "Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors"
 dl "$HF/Kijai/wav2vec2_safetensors/resolve/main/wav2vec2-chinese-base_fp16.safetensors" "$M/wav2vec2" "wav2vec2-chinese-base_fp16.safetensors"
