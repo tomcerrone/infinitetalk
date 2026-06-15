@@ -87,7 +87,11 @@ def wait_comfy(max_s=900):
     return False
 
 def claim():
-    return http("GET", f"{MC_URL}/api/workers/runpod/claim",
+    # provider en query → MassContent tamponne le fournisseur du pod DÈS le claim
+    # (avant même le 1er heartbeat /progress) : chaque job porte son backend tout de
+    # suite, même si le pod meurt avant de heartbeat. PROVIDER ∈ {runpod, vast},
+    # URL-safe. Rétro-compat : un MassContent antérieur ignore simplement le param.
+    return http("GET", f"{MC_URL}/api/workers/runpod/claim?provider={PROVIDER}",
                 headers={"x-pipeline-secret": PIPELINE_SECRET})
 
 def complete(payload):
