@@ -17,7 +17,7 @@ Config (env, injectée au create du pod par l'orchestrateur MassContent) :
   (RUNPOD_POD_ID auto-injecté par RunPod ; l'auto-terminaison passe par l'endpoint
    MassContent /api/workers/runpod/terminate — plus de RUNPOD_API_KEY sur le pod, PV-003)
 """
-import os, sys, time, json, socket, subprocess, threading, urllib.request, traceback
+import os, sys, time, json, socket, subprocess, threading, urllib.request, urllib.parse, traceback
 
 # Garde-fou global : urlretrieve (download assets) n'a pas de timeout socket par
 # défaut → un GET S3/CDN qui hang gèlerait le pod indéfiniment. 180s borne tout
@@ -43,6 +43,21 @@ HEARTBEAT_S = int(os.environ.get("HEARTBEAT_SECONDS", "45"))
 VAST = os.environ.get("CONTAINER_ID", "")
 PROVIDER = "vast" if VAST else "runpod"
 POD_ID = VAST or os.environ.get("RUNPOD_POD_ID", "")
+
+# GPU effectif du pod (nom BRUT nvidia-smi). Envoyé au /claim pour l'observabilité
+# coût/GPU côté MassContent (qui le mappe au label court "5090"/"PRO4500"/...). Best-
+# effort : si nvidia-smi échoue/absent, GPU_NAME="" et le claim n'envoie pas le param
+# (rétro-compat). Le GPU ne change pas en cours de pod → détecté une fois au démarrage.
+def _detect_gpu():
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[0].strip()
+    except Exception:
+        pass
+    return ""
+GPU_NAME = _detect_gpu()
 
 # Pipeline natif verrouillée (= réf qualité tom_FINAL). num_frames auto depuis l'audio.
 # IT_ATTENTION/IT_BLOCKSWAP : overrides par pod (env) pour les GPU non-Blackwell
@@ -87,11 +102,15 @@ def wait_comfy(max_s=900):
     return False
 
 def claim():
-    # provider en query → MassContent tamponne le fournisseur du pod DÈS le claim
-    # (avant même le 1er heartbeat /progress) : chaque job porte son backend tout de
-    # suite, même si le pod meurt avant de heartbeat. PROVIDER ∈ {runpod, vast},
-    # URL-safe. Rétro-compat : un MassContent antérieur ignore simplement le param.
-    return http("GET", f"{MC_URL}/api/workers/runpod/claim?provider={PROVIDER}",
+    # provider + GPU en query → MassContent tamponne le fournisseur ET le GPU effectif
+    # du pod DÈS le claim (avant le 1er heartbeat) : chaque job porte son backend +
+    # son GPU tout de suite, même si le pod meurt avant de heartbeat. PROVIDER ∈
+    # {runpod, vast} ; GPU_NAME = nom brut nvidia-smi (URL-encodé). Rétro-compat : un
+    # MassContent antérieur ignore simplement les params.
+    q = f"?provider={PROVIDER}"
+    if GPU_NAME:
+        q += "&gpu=" + urllib.parse.quote(GPU_NAME)
+    return http("GET", f"{MC_URL}/api/workers/runpod/claim{q}",
                 headers={"x-pipeline-secret": PIPELINE_SECRET})
 
 def complete(payload):
@@ -125,6 +144,21 @@ def self_terminate():
         except Exception as e:
             log("auto-terminaison échouée:", e)
 
+def audio_seconds(path):
+    """Durée (s) de l'audio source via ffprobe — best-effort (None si échec). Sert à
+    NORMALISER le coût/vidéo par GPU côté MassContent (le coût/vidéo brut dépend de la
+    durée audio → le coût/sec-audio est la seule métrique comparable entre GPU)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return round(float(out.stdout.strip()), 2)
+    except Exception:
+        pass
+    return None
+
 def process(job):
     vid = job["videoId"]
     jid = job["jobId"]
@@ -137,6 +171,7 @@ def process(job):
     progress(jid, podId=POD_ID, status="running", note=f"start {w}x{h}")
     urllib.request.urlretrieve(job["imageUrl"], img_path)
     urllib.request.urlretrieve(job["audioUrl"], aud_path)
+    aud_sec = audio_seconds(aud_path)  # mesuré AVANT le cleanup → coût/GPU normalisé
     progress(jid, note="assets téléchargés, génération en cours")
     cmd = ["python3", GEN, "--image", f"{vid}.png", "--audio", f"{vid}.mp3",
            "--width", str(w), "--height", str(h), "--prompt", prompt,
@@ -224,7 +259,7 @@ def process(job):
         except Exception:
             pass
     dur_ms = int((time.time() - t0) * 1000)  # durée génération+upload → costUsd côté MassContent
-    return key, url, dur_ms
+    return key, url, dur_ms, aud_sec
 
 def main():
     missing = [k for k, v in {"MASSCONTENT_BASE_URL": MC_URL,
@@ -248,10 +283,10 @@ def main():
             time.sleep(POLL_EMPTY_S); continue
         idle = 0
         try:
-            key, url, dur_ms = process(job)
+            key, url, dur_ms, aud_sec = process(job)
             complete({"jobId": job["jobId"], "videoId": job["videoId"],
                       "status": "completed", "videoS3Key": key, "videoUrl": url,
-                      "durationMs": dur_ms})
+                      "durationMs": dur_ms, "audioSec": aud_sec})
             log(f"job {job['jobId']} -> completed in {dur_ms}ms")
         except Exception as e:
             log("job FAILED:", e, traceback.format_exc()[-600:])
