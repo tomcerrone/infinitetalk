@@ -87,12 +87,15 @@ python3 generate.py --image <img.png> --audio <audio.mp3> \
   --prompt "a person calmly speaking to the camera, talking naturally to a friend, realistic, highly detailed face, sharp"
 ```
 
-## Scripts R&D / legacy (non utilisés en prod, conservés pour référence)
-`provision-comfyui-infinitetalk.sh`, `setup-pod.sh`, `setup-recover.sh`, `pod-run-setup.sh`
-(provisioning manuel pré-prod) · `pod-start.sh` (LTX, abandonné) · `pod-start-s2v*.sh` (S2V,
-rejeté qualité) · `pod-setup-it-seedvr2.sh` + `upscale.py` (SeedVR2, rejeté) ·
-`run-worker.sh` (ancienne archi worker.env, remplacée par boot.sh) · `introspect.py` (outil dev :
-schémas des nodes ComfyUI) · `novita-watch.js` (relevé périodique dispo/prix GPU, local).
+## Pistes R&D rejetées (historique) + outils locaux
+**Pistes rejetées** (scripts retirés le 2026-06-17 — récupérables via `git log`/`git show`) :
+**LTX** (abandonné) · **Wan2.2-S2V** (rejeté qualité) · **SeedVR2** (upscaler, rejeté qualité) ·
+ancien provisioning manuel (`setup-pod.sh`, `provision-comfyui-infinitetalk.sh`, `setup-recover.sh`)
+et ancienne archi worker (`worker.env`/`run-worker.sh`) — tous **remplacés par `setup-prod.sh` + `boot.sh`**.
+
+**Outils locaux** (hors chemin pod prod) : `introspect.py` (schémas des nodes ComfyUI) ·
+`novita-watch.js` (relevé périodique dispo/prix GPU multi-fournisseurs) ·
+`mirror-to-r2.sh` (remplit le miroir R2 Cloudflare des 7 modèles → boots rapides).
 
 ## Décisions clés / learnings
 - **colormatch=mkl** : corrige la dérive couleur/contraste sur vidéos longues (génération par fenêtres).
