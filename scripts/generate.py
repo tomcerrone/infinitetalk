@@ -107,18 +107,46 @@ def main():
     pid = r["prompt_id"]; print(f"[gen] prompt_id={pid}")
 
     t0 = time.time()
+    first_err_t = None  # début d'une série CONTINUE d'erreurs de poll (ComfyUI injoignable)
     while True:
         time.sleep(3)
-        try: h = get_json(f"{SERVER}/history/{pid}")
-        except Exception as e: print("[gen] poll err", e); continue
+        el = int(time.time() - t0)
+        # 7000s = maillon le plus serré de la chaîne de timeouts, et le plus PROPRE
+        # (sortie rc=3 avec logs). Doit rester > durée max réelle d'une génération :
+        # ~21min pour 45s d'audio sur 5090, ~2× sur GPU lent → 7000s couvre ~85s
+        # d'audio même sur le plus lent. Ordre : generate 7000 < worker kill 7200 <
+        # watchdog MC 180min. VÉRIFIÉ À CHAQUE ITÉRATION (avant, ce check vivait dans
+        # la branche `pid not in h` → INATTEIGNABLE si ComfyUI tombait : le poll
+        # bouclait jusqu'au hard-kill worker 7200s = ~2h de GPU gaspillé par crash).
+        if el > 7000:
+            print("[gen] TIMEOUT"); sys.exit(3)
+        try:
+            h = get_json(f"{SERVER}/history/{pid}")
+            first_err_t = None  # ComfyUI a répondu → reset la série d'erreurs
+        except Exception as e:
+            now = time.time()
+            if first_err_t is None: first_err_t = now
+            unreachable = int(now - first_err_t)
+            print(f"[gen] poll err ({unreachable}s sans ComfyUI):", e, flush=True)
+            # ComfyUI injoignable EN CONTINU > 120s = process mort (crash / OOM-kill).
+            # On abandonne VITE (échec rc=5 → retry sur un autre pod) au lieu de poller
+            # 2h dans le vide. Et on DUMPE la fin de comfyui.log : la VRAIE cause du
+            # crash (traceback "CUDA out of memory", arrêt net = OOM-kill système
+            # SIGKILL, ou erreur de node) y est — sinon INVISIBLE (le worker ne capture
+            # que CE stdout, jamais les logs ComfyUI). C'est ce qui rend chaque crash
+            # auto-diagnostiquable côté MassContent (logsTail du job FAILED).
+            if unreachable > 120:
+                print("[gen] ComfyUI INJOIGNABLE >120s -> abandon. Fin de comfyui.log :", flush=True)
+                try:
+                    with open("/workspace/logs/comfyui.log") as _f:
+                        for _ln in _f.readlines()[-15:]:
+                            print("[comfy]", _ln.rstrip())
+                except Exception as _le:
+                    print("[gen] comfyui.log illisible:", _le)
+                sys.exit(5)
+            continue
         if pid not in h:
-            el=int(time.time()-t0); print(f"[gen] ... {el}s", flush=True);
-            # 7000s = maillon le plus serré de la chaîne de timeouts, et le plus
-            # PROPRE (sortie rc=3 avec logs). Doit rester > durée max réelle d'une
-            # génération : ~21min pour 45s d'audio sur 5090, ~2× sur GPU lent
-            # (PRO4500) → 7000s couvre ~85s d'audio même sur le plus lent. Ordre à
-            # préserver : generate 7000 < worker.py kill 7200 < watchdog MC 180min.
-            if el>7000: print("[gen] TIMEOUT"); sys.exit(3)
+            print(f"[gen] ... {el}s", flush=True)
             continue
         entry = h[pid]; st = entry.get("status",{})
         print(f"[gen] status={st.get('status_str')} done={st.get('completed')} ({int(time.time()-t0)}s)")
