@@ -29,16 +29,19 @@ cp -f "$REPO/scripts/generate.py" /workspace/generate.py
 # serveur qui exécute le podTerminate. Le cron orphan-killer reste le filet.
 # Défini AVANT le provisioning pour être appelable par le garde-fou timeout.
 #
-# Multi-provider : Vast injecte CONTAINER_ID (= instance id pour le DELETE Vast).
-# On en déduit le provider + l'id à terminer, comme worker.py :
+# Multi-provider : on déduit le provider + l'id à terminer, comme worker.py :
+#  - Novita : id=NOVITA_WORKER_NAME (nom unique injecté ; Novita n'expose pas d'id
+#    natif au conteneur) → le serveur résout nom→id pour le DELETE. Testé en 1er.
 #  - Vast   : id=CONTAINER_ID, provider=vast → DELETE /instances/{id}/ côté serveur
 #  - RunPod : id=RUNPOD_POD_ID, provider=runpod (comportement historique inchangé)
 # Ce filet boot.sh n'est sollicité que si le worker n'a pas (encore) pu se couper
 # (setup KO / ComfyUI down) ; le scale-down de secours de l'orchestrateur rattrape
 # de toute façon les pods/instances orphelins via leur label it-worker.
 terminate_pod(){
-  local _id="${CONTAINER_ID:-${RUNPOD_POD_ID:-}}"
-  local _prov="runpod"; [ -n "${CONTAINER_ID:-}" ] && _prov="vast"
+  local _id _prov
+  if [ -n "${NOVITA_WORKER_NAME:-}" ]; then _id="$NOVITA_WORKER_NAME"; _prov="novita"
+  elif [ -n "${CONTAINER_ID:-}" ]; then _id="$CONTAINER_ID"; _prov="vast"
+  else _id="${RUNPOD_POD_ID:-}"; _prov="runpod"; fi
   [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "$_id" ] && curl -s -X POST \
     "${MASSCONTENT_BASE_URL%/}/api/workers/runpod/terminate" -H "Content-Type: application/json" \
     -H "x-pipeline-secret: ${PIPELINE_SECRET:-}" \

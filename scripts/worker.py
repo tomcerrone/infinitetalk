@@ -32,17 +32,25 @@ GEN = "/workspace/generate.py"
 IDLE_EXIT_S = int(os.environ.get("IDLE_EXIT_SECONDS", "300"))
 POLL_EMPTY_S = int(os.environ.get("POLL_EMPTY_SECONDS", "10"))
 HEARTBEAT_S = int(os.environ.get("HEARTBEAT_SECONDS", "45"))
-# Détection du fournisseur GPU. Vast.ai injecte CONTAINER_ID = l'id natif de
-# l'instance (= celui utilisé par DELETE /instances/{id}/ côté MassContent), tandis
-# que RunPod injecte RUNPOD_POD_ID. On en déduit le provider ET le POD_ID :
-#  - sur Vast : POD_ID = CONTAINER_ID (l'instance id réel — c'est lui qui doit
-#    partir à /terminate pour que le DELETE Vast vise la bonne instance ; le label
-#    mis en fallback dans RUNPOD_POD_ID ne servirait pas au DELETE).
-#  - sur RunPod : CONTAINER_ID absent → POD_ID = RUNPOD_POD_ID, PROVIDER "runpod"
-#    (comportement strictement identique à avant l'intégration Vast).
+# Détection du fournisseur GPU + POD_ID (id natif utilisé par /terminate côté
+# MassContent). Chaque fournisseur expose son identité différemment :
+#  - Novita : N'INJECTE AUCUN id natif dans le conteneur → l'orchestrateur lui passe
+#    au create la var NOVITA_WORKER_NAME (= le nom unique du pod). Le worker la
+#    rapporte comme POD_ID et MassContent résout nom→id natif pour le DELETE.
+#    Testé EN PREMIER (priorité) pour qu'un éventuel CONTAINER_ID parasite n'écrase
+#    pas l'identité Novita.
+#  - Vast : injecte CONTAINER_ID = l'instance id réel → POD_ID = CONTAINER_ID
+#    (c'est lui qui part à /terminate pour viser la bonne instance Vast).
+#  - RunPod : injecte RUNPOD_POD_ID → POD_ID = RUNPOD_POD_ID (comportement
+#    historique, strictement inchangé).
+NOVITA = os.environ.get("NOVITA_WORKER_NAME", "")
 VAST = os.environ.get("CONTAINER_ID", "")
-PROVIDER = "vast" if VAST else "runpod"
-POD_ID = VAST or os.environ.get("RUNPOD_POD_ID", "")
+if NOVITA:
+    PROVIDER, POD_ID = "novita", NOVITA
+elif VAST:
+    PROVIDER, POD_ID = "vast", VAST
+else:
+    PROVIDER, POD_ID = "runpod", os.environ.get("RUNPOD_POD_ID", "")
 
 # GPU effectif du pod (nom BRUT nvidia-smi). Envoyé au /claim pour l'observabilité
 # coût/GPU côté MassContent (qui le mappe au label court "5090"/"PRO4500"/...). Best-
