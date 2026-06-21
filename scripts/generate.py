@@ -97,6 +97,14 @@ def main():
     subprocess.run(["ffmpeg","-y","-loglevel","error","-i",_ain,"-af","apad","-t",str(tgt),_ap], check=False)
     a.audio = f"_pad_{a.audio}"
     print(f"[gen] num_frames aligne={a.num_frames}, audio cale a {tgt}s (lip-sync de bout en bout)")
+    # VISIBILITÉ de la troncature : si l'audio SOURCE dépasse la durée générée (cap
+    # max_frames atteint), le `-t` du ffmpeg apad ci-dessus le TRONQUE. Sans ce log,
+    # un client dont l'audio > ~max_frames/fps recevrait une vidéo écourtée SANS aucune
+    # trace. On le remonte dans le stdout (capté par worker.py → logsTail MassContent).
+    _src_dur = ffprobe_duration(_ain)
+    if _src_dur and tgt < _src_dur - 0.5:
+        print(f"[gen] WARN AUDIO TRONQUÉ: source={_src_dur}s -> video={tgt}s "
+              f"({round(_src_dur - tgt, 1)}s perdus, cap num_frames={a.num_frames}/max_frames={a.max_frames})")
 
     graph = build_graph(a)
     cid = uuid.uuid4().hex
