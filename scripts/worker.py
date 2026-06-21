@@ -41,12 +41,20 @@ HEARTBEAT_S = int(os.environ.get("HEARTBEAT_SECONDS", "45"))
 #    pas l'identité Novita.
 #  - Vast : injecte CONTAINER_ID = l'instance id réel → POD_ID = CONTAINER_ID
 #    (c'est lui qui part à /terminate pour viser la bonne instance Vast).
+#  - Clore : comme Novita, AUCUN id natif dans le conteneur → on passe CLORE_WORKER_NAME
+#    (nom unique). Le worker s'identifie provider=clore avec ce nom (visibilité /claim
+#    + /progress). L'auto-terminate Clore est géré côté orchestrateur (scale-down par
+#    order id) car /my_orders n'expose pas le nom → terminate par nom est un no-op
+#    gracieux (le nom n'est pas un order id).
 #  - RunPod : injecte RUNPOD_POD_ID → POD_ID = RUNPOD_POD_ID (comportement
 #    historique, strictement inchangé).
 NOVITA = os.environ.get("NOVITA_WORKER_NAME", "")
+CLORE = os.environ.get("CLORE_WORKER_NAME", "")
 VAST = os.environ.get("CONTAINER_ID", "")
 if NOVITA:
     PROVIDER, POD_ID = "novita", NOVITA
+elif CLORE:
+    PROVIDER, POD_ID = "clore", CLORE
 elif VAST:
     PROVIDER, POD_ID = "vast", VAST
 else:

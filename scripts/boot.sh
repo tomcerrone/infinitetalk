@@ -40,6 +40,7 @@ cp -f "$REPO/scripts/generate.py" /workspace/generate.py
 terminate_pod(){
   local _id _prov
   if [ -n "${NOVITA_WORKER_NAME:-}" ]; then _id="$NOVITA_WORKER_NAME"; _prov="novita"
+  elif [ -n "${CLORE_WORKER_NAME:-}" ]; then _id="$CLORE_WORKER_NAME"; _prov="clore"
   elif [ -n "${CONTAINER_ID:-}" ]; then _id="$CONTAINER_ID"; _prov="vast"
   else _id="${RUNPOD_POD_ID:-}"; _prov="runpod"; fi
   [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "$_id" ] && curl -s -X POST \
