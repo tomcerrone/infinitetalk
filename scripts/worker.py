@@ -72,9 +72,17 @@ GPU_NAME = _detect_gpu()
 # → int('') = crash argparse, sur CHAQUE job.
 ATTENTION = os.environ.get("IT_ATTENTION") or "sageattn"
 BLOCKSWAP = os.environ.get("IT_BLOCKSWAP") or "10"
+# Plafond de durée vidéo (Tom 2026-06-21, PV-005 option A : 90s max). 90s × 25fps =
+# 2250 frames. L'alignement fenêtre (81+stride·k) arrondit AU-DESSUS → un audio ≤90s
+# est généré EN ENTIER (pas de troncature) ; au-delà de ~92s, tronqué + WARN (cf
+# generate.py). Avant : défaut 1000 (~40s) qui tronquait silencieusement la médiane
+# prod (45s). Tunable via env IT_MAX_FRAMES. ⚠ une vidéo plus longue = plus de RAM au
+# decode/RIFE → sur un pod community sous-doté, risque OOM accru (géré par fail-fast +
+# retry ; cause à confirmer via comfyui.log au 1er crash long — cf mémoire session).
+MAX_FRAMES = os.environ.get("IT_MAX_FRAMES") or "2250"
 GEN_ARGS = ["--blockswap", BLOCKSWAP, "--prefetch", "1", "--shift", "3", "--audio-scale", "1.0",
             "--attention", ATTENTION, "--steps", "4", "--rife", "2", "--colormatch", "mkl",
-            "--scheduler", "euler",
+            "--scheduler", "euler", "--max-frames", MAX_FRAMES,
             "--base-model", "Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"]
 DEFAULT_PROMPT = ("a person calmly speaking to the camera, talking naturally to a friend, "
                   "realistic, highly detailed face, sharp")
