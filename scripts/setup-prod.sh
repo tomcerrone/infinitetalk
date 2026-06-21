@@ -206,7 +206,14 @@ from huggingface_hub import hf_hub_download
 repo, path, dest = sys.argv[1], sys.argv[2], sys.argv[3]
 shutil.copy(hf_hub_download(repo_id=repo, filename=path), dest)
 PYEOF
-  then [ -s "$2/$3" ] && { log "ok $3 (hf_hub_download)"; return 0; }; fi
+  then
+    # Le fallback a réécrit le fichier complet (copy authentifié) → le .aria2 résiduel
+    # d'un essai aria2c interrompu est OBSOLÈTE. Sans ce rm, model_ok()/models_present()
+    # voient le .aria2 → modèle jugé INCOMPLET → .models-ok non écrit → boot.sh tue un
+    # pod dont les modèles sont en fait corrects (faux négatif + re-download en boucle).
+    rm -f "$2/$3.aria2" 2>/dev/null || true
+    [ -s "$2/$3" ] && { log "ok $3 (hf_hub_download)"; return 0; }
+  fi
   log "ERREUR dl $3 échoué après 3 essais + fallback hf"; return 1; }
 HF=https://huggingface.co
 # Miroir R2 public (bucket masscontent-models) : source PRIORITAIRE des modèles,
