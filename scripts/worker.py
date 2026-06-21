@@ -17,7 +17,7 @@ Config (env, injectée au create du pod par l'orchestrateur MassContent) :
   (RUNPOD_POD_ID auto-injecté par RunPod ; l'auto-terminaison passe par l'endpoint
    MassContent /api/workers/runpod/terminate — plus de RUNPOD_API_KEY sur le pod, PV-003)
 """
-import os, sys, time, json, socket, subprocess, threading, urllib.request, urllib.parse, traceback
+import os, sys, time, json, socket, subprocess, threading, urllib.request, urllib.parse, traceback, glob
 
 # Garde-fou global : urlretrieve (download assets) n'a pas de timeout socket par
 # défaut → un GET S3/CDN qui hang gèlerait le pod indéfiniment. 180s borne tout
@@ -244,11 +244,21 @@ def process(job):
     # credentials AWS sur le pod éphémère).
     key = job["outputKey"]
     progress(jid, note="upload S3")
-    up = subprocess.run(
-        ["curl", "-fsS", "-X", "PUT", "-H", "Content-Type: video/mp4",
-         "--upload-file", path, job["uploadUrl"]],
-        capture_output=True, text=True,
-    )
+    # Timeouts OBLIGATOIRES : à ce stade le thread heartbeat (qui portait le HARD_KILL
+    # 7200s) est déjà mort (done.set() à l'EOF du stdout de generate.py). Un PUT S3 qui
+    # stalle (presigned lente, réseau pod↔R2 dégradé) gèlerait donc le worker DANS
+    # process() — jamais d'état terminal (~3h jusqu'au watchdog MC) + PII pas nettoyée
+    # (le finally du main loop n'est pas atteint). --max-time côté curl + timeout
+    # subprocess (double ceinture) → TimeoutExpired → chemin d'échec standard (cleanup PII).
+    try:
+        up = subprocess.run(
+            ["curl", "-fsS", "--connect-timeout", "30", "--max-time", "900",
+             "-X", "PUT", "-H", "Content-Type: video/mp4",
+             "--upload-file", path, job["uploadUrl"]],
+            capture_output=True, text=True, timeout=960,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("upload S3 timeout (>960s) — PUT presigné bloqué")
     if up.returncode != 0:
         raise RuntimeError(f"upload S3 echec rc={up.returncode}: {up.stderr[-300:]}")
     url = job.get("outputUrl") or key
@@ -282,12 +292,12 @@ def main():
                 log(f"inactif {idle}s -> arrêt du pod"); self_terminate(); return
             time.sleep(POLL_EMPTY_S); continue
         idle = 0
+        # process() est SEUL dans le try : seul un échec RÉEL de génération/upload doit
+        # mener à complete(failed). Si process() réussit, la vidéo est sur S3 → on ne
+        # bascule JAMAIS en failed (sinon un simple blip réseau sur l'ACK /complete
+        # ferait JETER le travail + RE-GÉNÉRER côté MassContent = GPU regaspillé).
         try:
-            key, url, dur_ms, aud_sec = process(job)
-            complete({"jobId": job["jobId"], "videoId": job["videoId"],
-                      "status": "completed", "videoS3Key": key, "videoUrl": url,
-                      "durationMs": dur_ms, "audioSec": aud_sec})
-            log(f"job {job['jobId']} -> completed in {dur_ms}ms")
+            result = process(job)
         except Exception as e:
             log("job FAILED:", e, traceback.format_exc()[-600:])
             try:
@@ -295,14 +305,37 @@ def main():
                           "status": "failed", "error": str(e)[:500]})
             except Exception as e2:
                 log("complete(failed) err:", e2)
+        else:
+            # Succès : vidéo générée + uploadée. complete(completed) avec RETRY backoff —
+            # /complete est idempotent côté serveur (accepte un completed tardif), donc on
+            # insiste sans jamais émettre failed. Si tout échoue, le watchdog réconciliera.
+            key, url, dur_ms, aud_sec = result
+            payload = {"jobId": job["jobId"], "videoId": job["videoId"],
+                       "status": "completed", "videoS3Key": key, "videoUrl": url,
+                       "durationMs": dur_ms, "audioSec": aud_sec}
+            backoff = [5, 15, 30, 60]
+            for attempt in range(len(backoff) + 1):
+                try:
+                    complete(payload)
+                    log(f"job {job['jobId']} -> completed in {dur_ms}ms")
+                    break
+                except Exception as e2:
+                    log(f"complete(completed) essai {attempt + 1}/{len(backoff) + 1} échec:", e2)
+                    if attempt < len(backoff):
+                        time.sleep(backoff[attempt])
+            else:
+                log(f"job {job['jobId']} : completed NON-ACK après {len(backoff) + 1} essais "
+                    f"— vidéo sur S3 ({key}), watchdog MassContent réconciliera (PAS de failed émis)")
         finally:
-            # Cleanup PII systématique (visage + voix du client) : en succès
-            # process() les supprime déjà, mais en cas d'ÉCHEC ils resteraient
-            # sur le pod (servis par le serveur de logs 8189 + exposition RGPD)
-            # jusqu'à l'idle-exit. On efface les inputs du job quoi qu'il arrive.
+            # Cleanup PII systématique sur TOUS les chemins (succès ET échec) : visage
+            # (<vid>.png) + voix (<vid>.mp3) + voix paddée dérivée (_pad_<vid>.mp3, créée
+            # par generate.py) + vidéo de sortie (it_<vid>.mp4) si l'upload a échoué.
+            # Le glob *<vid>* couvre tout dérivé présent ou futur en un seul point (le
+            # videoId est unique → aucune collision inter-job).
             vid = job.get("videoId")
             if vid:
-                for pth in (f"{INPUT_DIR}/{vid}.png", f"{INPUT_DIR}/{vid}.mp3"):
+                for pth in (glob.glob(f"{INPUT_DIR}/*{vid}*")
+                            + glob.glob(f"/workspace/ComfyUI/output/**/it_{vid}*", recursive=True)):
                     try:
                         os.remove(pth)
                     except OSError:
