@@ -43,10 +43,15 @@ terminate_pod(){
   elif [ -n "${CLORE_WORKER_NAME:-}" ]; then _id="$CLORE_WORKER_NAME"; _prov="clore"
   elif [ -n "${CONTAINER_ID:-}" ]; then _id="$CONTAINER_ID"; _prov="vast"
   else _id="${RUNPOD_POD_ID:-}"; _prov="runpod"; fi
-  [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "$_id" ] && curl -s -X POST \
+  [ -n "${MASSCONTENT_BASE_URL:-}" ] && [ -n "$_id" ] || return 0
+  # --connect-timeout/--max-time : sans bornes, un MassContent lent/injoignable ferait
+  # bloquer ce curl (timeout socket défaut très long) AVANT le sleep → le pod facturerait
+  # pendant tout le hang. On borne (10s/30s) + on logge le rc (le reaper reste le filet).
+  curl -s -X POST --connect-timeout 10 --max-time 30 \
     "${MASSCONTENT_BASE_URL%/}/api/workers/runpod/terminate" -H "Content-Type: application/json" \
     -H "x-pipeline-secret: ${PIPELINE_SECRET:-}" \
     -d "{\"podId\":\"$_id\",\"provider\":\"$_prov\"}" >/dev/null 2>&1
+  log "terminate_pod($_prov id=$_id) rc=$?"
 }
 
 # Provisioning idempotent — UNE fois (skip ce qui existe déjà → réutilisable si
