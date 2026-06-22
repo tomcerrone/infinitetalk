@@ -274,6 +274,16 @@ def process(job):
     # process() — jamais d'état terminal (~3h jusqu'au watchdog MC) + PII pas nettoyée
     # (le finally du main loop n'est pas atteint). --max-time côté curl + timeout
     # subprocess (double ceinture) → TimeoutExpired → chemin d'échec standard (cleanup PII).
+    # Heartbeat PENDANT l'upload : le thread de génération (porteur du signal de vie) est
+    # mort à l'EOF de generate.py. Un PUT lent (jusqu'à 960s) laisserait le job MUET → le
+    # watchdog MassContent (20min de silence) pourrait le rescheduler sur un 2e pod = double
+    # génération (conséquence rattrapée par la réconciliation S3 serveur, mais autant ne pas
+    # provoquer le reschedule). Thread additif best-effort (progress() avale ses erreurs).
+    up_done = threading.Event()
+    def _upload_hb():
+        while not up_done.wait(HEARTBEAT_S):
+            progress(jid, note=f"upload S3 en cours {int(time.time() - t0)}s")
+    threading.Thread(target=_upload_hb, daemon=True).start()
     try:
         up = subprocess.run(
             ["curl", "-fsS", "--connect-timeout", "30", "--max-time", "900",
@@ -283,6 +293,8 @@ def process(job):
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("upload S3 timeout (>960s) — PUT presigné bloqué")
+    finally:
+        up_done.set()
     if up.returncode != 0:
         raise RuntimeError(f"upload S3 echec rc={up.returncode}: {up.stderr[-300:]}")
     url = job.get("outputUrl") or key
@@ -300,6 +312,13 @@ def main():
                               "PIPELINE_SECRET": PIPELINE_SECRET}.items() if not v]
     if missing:
         log("config manquante:", ",".join(missing)); sys.exit(2)
+    # Observabilité fuite coût : tracer le fournisseur + l'id natif déduits. Un POD_ID
+    # vide (env non injectée / mal nommée) rend self_terminate() inopérant → le pod ne
+    # se coupe pas seul (seul le reaper/orphan-killer le rattrape, après le grace). On
+    # le remonte en clair pour diagnostiquer une fuite plutôt que de la subir en silence.
+    log(f"provider={PROVIDER} podId={POD_ID or '(VIDE)'} gpu={GPU_NAME or '?'}")
+    if not POD_ID:
+        log("WARN POD_ID vide → self_terminate no-op (coupe assurée par le reaper, pas par le pod)")
     if not wait_comfy():
         log("ComfyUI introuvable après 15min, abandon"); sys.exit(1)
     log("ComfyUI up — worker démarré")
