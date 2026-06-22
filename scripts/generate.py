@@ -84,7 +84,14 @@ def main():
 
     if a.num_frames <= 0:
         dur = ffprobe_duration(f"{a.audio_path}/{a.audio}")
-        a.num_frames = min(int(round((dur or 16) * a.fps)), a.max_frames)
+        # Fail-fast si l'audio est illisible/vide : avant, `(dur or 16)` retombait sur 16
+        # frames → un clip de ~0,6s était généré PUIS uploadé comme un succès (montage +
+        # publication d'une vidéo cassée, sans aucune trace). Mieux vaut échouer net
+        # (rc=6 → job FAILED côté MassContent → retry/orphan) que livrer un output corrompu.
+        if not dur or dur <= 0:
+            print(f"[gen] AUDIO ILLISIBLE/VIDE: {a.audio_path}/{a.audio} -> abandon (rc=6)", flush=True)
+            sys.exit(6)
+        a.num_frames = min(int(round(dur * a.fps)), a.max_frames)
         print(f"[gen] audio dur={dur}s -> num_frames={a.num_frames}")
 
     # Aligner num_frames sur une fin de fenetre (81 + stride*k) ET caler l'audio dessus
