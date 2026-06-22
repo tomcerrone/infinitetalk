@@ -6,7 +6,7 @@ NB prod : les DEFAUTS argparse ci-dessous sont des valeurs de test — la pipeli
 prod verrouillee est definie par worker.py (GEN_ARGS) + README (commande de ref).
 La ligne "[gen] DONE in <s>s -> <path>" est PARSEE par worker.py : ne pas changer
 son format sans mettre worker.py a jour."""
-import argparse, json, subprocess, time, urllib.request, sys, uuid, math
+import argparse, json, os, subprocess, time, urllib.request, sys, uuid, math
 
 # 8188 = port lance par setup-prod.sh (start_comfyui) et expose par MassContent
 # (deployWorkerPod, ports "8188/http") — meme constante dans worker.py (COMFY).
@@ -25,6 +25,33 @@ def post_json(url, data):
 
 def get_json(url):
     return json.load(urllib.request.urlopen(url, timeout=60))
+
+def avail_ram_gb():
+    """RAM systeme disponible (Go) via /proc/meminfo MemAvailable. None si illisible."""
+    try:
+        with open("/proc/meminfo") as f:
+            for ln in f:
+                if ln.startswith("MemAvailable:"):
+                    return int(ln.split()[1]) / (1024 * 1024)  # kB -> Go
+    except Exception:
+        pass
+    return None
+
+def rife_peak_gb(num_frames, multiplier, width, height):
+    """Pic RAM systeme estime (Go) de RIFE. RIFE accumule en RAM, en pixels pleine
+    resolution : frames sources (fp32, encore referencees via des vues) + liste des
+    frames interpolees (fp16) + concatenation finale (fp32). out = num*multiplier."""
+    px = width * height * 3
+    out = num_frames * multiplier
+    return (num_frames * 4 + out * 2 + out * 4) * px / 1e9
+
+def rife_fits_ram(num_frames, multiplier, width, height, avail_gb, headroom=0.7):
+    """RIFE tient-elle en RAM systeme ? multiplier<=1 -> pas d'interpolation -> True.
+    avail_gb None (RAM indeterminable) -> True (comportement historique, pas de
+    desactivation a l'aveugle). Sinon : pic estime <= headroom * RAM dispo."""
+    if multiplier <= 1 or avail_gb is None:
+        return True
+    return rife_peak_gb(num_frames, multiplier, width, height) <= avail_gb * headroom
 
 def build_graph(a):
     g = {
@@ -53,7 +80,11 @@ def build_graph(a):
         g["18"] = {"class_type":"WanVideoTorchCompileSettings","inputs":{"backend":"inductor","fullgraph":False,"mode":a.compile_mode,"dynamic":False,"dynamo_cache_size_limit":64,"compile_transformer_blocks_only":True}}
         g["5"]["inputs"]["compile_args"] = ["18",0]
     if getattr(a, "rife", 0) and a.rife > 1:
-        g["20"] = {"class_type":"RIFE VFI","inputs":{"ckpt_name":"rife49.pth","frames":["16",0],"clear_cache_after_n_frames":10,"multiplier":a.rife,"fast_mode":True,"ensemble":False,"scale_factor":1.0,"dtype":"float32","torch_compile":False,"batch_size":4}}
+        # dtype fp16 (au lieu de fp32) : RIFE stocke ses frames interpolees au dtype
+        # choisi -> divise par ~2 la RAM systeme de la phase la plus longue (la concat
+        # finale repasse en fp32 de toute facon). Qualite quasi identique (rife49 tourne
+        # nativement en fp16). clear_cache=4 + batch_size=2 reduisent le pic VRAM.
+        g["20"] = {"class_type":"RIFE VFI","inputs":{"ckpt_name":"rife49.pth","frames":["16",0],"clear_cache_after_n_frames":4,"multiplier":a.rife,"fast_mode":True,"ensemble":False,"scale_factor":1.0,"dtype":"float16","torch_compile":False,"batch_size":2}}
         g["17"]["inputs"]["images"] = ["20",0]
         g["17"]["inputs"]["frame_rate"] = int(25 * a.rife)
     return g
@@ -112,6 +143,30 @@ def main():
     if _src_dur and tgt < _src_dur - 0.5:
         print(f"[gen] WARN AUDIO TRONQUÉ: source={_src_dur}s -> video={tgt}s "
               f"({round(_src_dur - tgt, 1)}s perdus, cap num_frames={a.num_frames}/max_frames={a.max_frames})")
+
+    # ── Garde-fou RAM systeme pour RIFE (anti-OOM longues videos) ────────────────
+    # RIFE (interpolation 25->50fps) est l'accumulateur n1 de RAM systeme et la cause
+    # du SIGKILL (OOM-killer) au-dela de ~55s. Le rendu final MassContent est en 30fps
+    # -> le 50fps est de toute facon re-echantillonne (benefice marginal). On garde donc
+    # RIFE : (a) TOUJOURS sous IT_RIFE_SAFE_FRAMES (plage deja eprouvee en prod -> zero
+    # regression sur les videos courtes) ; (b) au-dela, SEULEMENT si le pic RAM estime
+    # tient dans la RAM dispo du pod (nodes community = RAM heterogenes) ; sinon rendu
+    # 25fps (->30fps au montage), jamais d'OOM. La demi-precision (node 20) aide en plus.
+    if a.rife and a.rife > 1:
+        safe = int(os.environ.get("IT_RIFE_SAFE_FRAMES") or "1320")  # ~52s : plage eprouvee
+        hr = float(os.environ.get("IT_RIFE_RAM_HEADROOM") or "0.7")
+        avail = avail_ram_gb()
+        availr = round(avail, 1) if avail is not None else "?"
+        if a.num_frames <= safe:
+            print(f"[gen] RIFE active (frames={a.num_frames} <= {safe} eprouve ; RAM dispo={availr}Go)", flush=True)
+        elif rife_fits_ram(a.num_frames, a.rife, a.width, a.height, avail, hr):
+            est = round(rife_peak_gb(a.num_frames, a.rife, a.width, a.height), 1)
+            print(f"[gen] RIFE active (pic RAM estime {est}Go <= {hr:.0%}x{availr}Go ; frames={a.num_frames})", flush=True)
+        else:
+            est = round(rife_peak_gb(a.num_frames, a.rife, a.width, a.height), 1)
+            print(f"[gen] RIFE DESACTIVEE: pic RAM estime {est}Go > {hr:.0%}x{availr}Go dispo "
+                  f"(frames={a.num_frames}) -> rendu 25fps anti-OOM (final 30fps)", flush=True)
+            a.rife = 0
 
     graph = build_graph(a)
     cid = uuid.uuid4().hex
