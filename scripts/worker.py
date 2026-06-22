@@ -88,14 +88,15 @@ GPU_NAME = _detect_gpu()
 # → int('') = crash argparse, sur CHAQUE job.
 ATTENTION = os.environ.get("IT_ATTENTION") or "sageattn"
 BLOCKSWAP = os.environ.get("IT_BLOCKSWAP") or "10"
-# Plafond de durée vidéo (Tom 2026-06-21, PV-005 option A : 90s max). 90s × 25fps =
-# 2250 frames. L'alignement fenêtre (81+stride·k) arrondit AU-DESSUS → un audio ≤90s
-# est généré EN ENTIER (pas de troncature) ; au-delà de ~92s, tronqué + WARN (cf
-# generate.py). Avant : défaut 1000 (~40s) qui tronquait silencieusement la médiane
-# prod (45s). Tunable via env IT_MAX_FRAMES. ⚠ une vidéo plus longue = plus de RAM au
-# decode/RIFE → sur un pod community sous-doté, risque OOM accru (géré par fail-fast +
-# retry ; cause à confirmer via comfyui.log au 1er crash long — cf mémoire session).
-MAX_FRAMES = os.environ.get("IT_MAX_FRAMES") or "2250"
+# Plafond de durée vidéo (Tom 2026-06-22 : 1 min max). 60s × 25fps = 1500 frames.
+# AVANT : 2250 (90s, PV-005) — mais le GPU OOM-kill au-delà de ~60s (PROUVÉ : 60s
+# COMPLETE en ~35min ; 85s plante en plein sampling vers la frame ~1500, le conteneur
+# manque de RAM). 2250 était donc un plafond THÉORIQUE jamais atteignable. On cale à
+# 1500 = enveloppe GPU prouvée sûre : un audio > ~60s est TRONQUÉ (+ WARN generate.py)
+# au lieu d'OOM-killer le pod en boucle (retry coûteux + 0 vidéo). L'alignement fenêtre
+# (81+72k) arrondit 1500 → 1521 frames (60,8s) = exactement le 60s prouvé. Tunable via
+# IT_MAX_FRAMES — NE PAS remonter sans re-prouver l'enveloppe RAM du conteneur GPU.
+MAX_FRAMES = os.environ.get("IT_MAX_FRAMES") or "1500"
 GEN_ARGS = ["--blockswap", BLOCKSWAP, "--prefetch", "1", "--shift", "3", "--audio-scale", "1.0",
             "--attention", ATTENTION, "--steps", "4", "--rife", "2", "--colormatch", "mkl",
             "--scheduler", "euler", "--max-frames", MAX_FRAMES,
