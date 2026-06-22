@@ -1,44 +1,32 @@
-"""Tests unitaires du garde-fou RAM RIFE (generate.py).
-Run : python3 scripts/test_generate.py  (ne necessite ni GPU ni ComfyUI ;
-generate.py n'execute main() que sous __main__, l'import est sans effet de bord)."""
+"""Tests unitaires du garde-fou anti-OOM RIFE (generate.py).
+Run : python3 scripts/test_generate.py  (ni GPU ni ComfyUI requis ; generate.py
+n'execute main() que sous __main__, l'import est sans effet de bord)."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate as g
 
 
-def test_peak_scales_with_frames():
-    # Le pic RAM croit avec la duree (plus de frames) et le multiplicateur.
-    p45 = g.rife_peak_gb(1105, 2, 720, 1280)
-    p60 = g.rife_peak_gb(1512, 2, 720, 1280)
-    assert 0 < p45 < p60, (p45, p60)
-    assert g.rife_peak_gb(1512, 3, 720, 1280) > p60
+def test_rife_on_under_threshold():
+    # Sous le seuil (videos courtes, plage eprouvee) -> RIFE conservee.
+    assert g.rife_decision(1105, 1305) is True   # ~45s
+    assert g.rife_decision(1305, 1305) is True   # ~50s (pile au seuil)
 
 
-def test_multiplier_1_always_fits():
-    # Pas d'interpolation (multiplier<=1) -> rien a accumuler -> toujours OK.
-    assert g.rife_fits_ram(10**6, 1, 720, 1280, 1.0) is True
+def test_rife_off_above_threshold():
+    # Au-dela du seuil (videos longues) -> RIFE desactivee (anti-OOM, 25fps).
+    assert g.rife_decision(1377, 1305) is False  # ~52s
+    assert g.rife_decision(1500, 1305) is False  # ~60s (le cas qui OOM-killait)
 
 
-def test_none_avail_keeps_rife():
-    # RAM indeterminable (/proc illisible) -> comportement historique (on garde RIFE).
-    assert g.rife_fits_ram(5000, 2, 720, 1280, None) is True
+def test_threshold_is_tunable():
+    # Le seuil est parametrable (env IT_RIFE_MAX_FRAMES) : remonter le seuil reactive RIFE.
+    assert g.rife_decision(1500, 1600) is True
 
 
-def test_skips_when_over_budget():
-    # Petit node (8 Go) + longue video -> ne tient pas -> RIFE a desactiver.
-    assert g.rife_fits_ram(1512, 2, 720, 1280, 8.0, 0.7) is False
-
-
-def test_keeps_when_room():
-    # Gros node (256 Go) -> tient large -> RIFE conservee.
-    assert g.rife_fits_ram(1512, 2, 720, 1280, 256.0, 0.7) is True
-
-
-def test_headroom_is_respected():
-    # Au pic exact, headroom=1.0 accepte, 0.5 refuse (le seuil bouge avec headroom).
-    peak = g.rife_peak_gb(1512, 2, 720, 1280)
-    assert g.rife_fits_ram(1512, 2, 720, 1280, peak, 1.0) is True
-    assert g.rife_fits_ram(1512, 2, 720, 1280, peak, 0.5) is False
+def test_avail_ram_gb_runs():
+    # Ne doit jamais lever (None acceptable hors Linux / hors conteneur).
+    v = g.avail_ram_gb()
+    assert v is None or (isinstance(v, float) and v > 0)
 
 
 if __name__ == "__main__":

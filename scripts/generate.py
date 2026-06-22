@@ -26,32 +26,44 @@ def post_json(url, data):
 def get_json(url):
     return json.load(urllib.request.urlopen(url, timeout=60))
 
+def _read_int(path):
+    try:
+        with open(path) as f:
+            v = f.read().strip()
+        return None if v in ("", "max") else int(v)
+    except Exception:
+        return None
+
 def avail_ram_gb():
-    """RAM systeme disponible (Go) via /proc/meminfo MemAvailable. None si illisible."""
+    """RAM reellement disponible (Go), CONTAINER-AWARE. /proc/meminfo seul voit la RAM
+    de l'HOTE, PAS la limite cgroup du conteneur GPU -> trompeur (on croit avoir 100+Go
+    alors que le conteneur est OOM-killed bien avant sa limite). On prend le MIN entre
+    (limite cgroup - usage) [v2 puis v1] et MemAvailable hote. None si rien de lisible.
+    Sert a l'OBSERVABILITE (la decision RIFE est par seuil de frames, plus fiable)."""
+    cands = []
     try:
         with open("/proc/meminfo") as f:
             for ln in f:
                 if ln.startswith("MemAvailable:"):
-                    return int(ln.split()[1]) / (1024 * 1024)  # kB -> Go
+                    cands.append(int(ln.split()[1]) * 1024)  # kB -> octets
+                    break
     except Exception:
         pass
-    return None
+    lim2, cur2 = _read_int("/sys/fs/cgroup/memory.max"), _read_int("/sys/fs/cgroup/memory.current")
+    if lim2 is not None and cur2 is not None:
+        cands.append(max(0, lim2 - cur2))
+    lim1 = _read_int("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    cur1 = _read_int("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    if lim1 is not None and lim1 < (1 << 62) and cur1 is not None:  # < 2^62 = limite reelle (pas "unlimited")
+        cands.append(max(0, lim1 - cur1))
+    return min(cands) / (1024 ** 3) if cands else None
 
-def rife_peak_gb(num_frames, multiplier, width, height):
-    """Pic RAM systeme estime (Go) de RIFE. RIFE accumule en RAM, en pixels pleine
-    resolution : frames sources (fp32, encore referencees via des vues) + liste des
-    frames interpolees (fp16) + concatenation finale (fp32). out = num*multiplier."""
-    px = width * height * 3
-    out = num_frames * multiplier
-    return (num_frames * 4 + out * 2 + out * 4) * px / 1e9
-
-def rife_fits_ram(num_frames, multiplier, width, height, avail_gb, headroom=0.7):
-    """RIFE tient-elle en RAM systeme ? multiplier<=1 -> pas d'interpolation -> True.
-    avail_gb None (RAM indeterminable) -> True (comportement historique, pas de
-    desactivation a l'aveugle). Sinon : pic estime <= headroom * RAM dispo."""
-    if multiplier <= 1 or avail_gb is None:
-        return True
-    return rife_peak_gb(num_frames, multiplier, width, height) <= avail_gb * headroom
+def rife_decision(num_frames, max_frames_rife):
+    """RIFE (interpolation 25->50fps) active ? Decision par SEUIL DE FRAMES empirique :
+    au-dela, l'accumulation pixels de RIFE sature la RAM du conteneur et fait OOM-killer
+    (SIGKILL) ComfyUI. Deterministe -> fiable, contrairement a une estimation RAM (la
+    limite conteneur est peu observable). <=seuil : RIFE on ; au-dela : 25fps (final 30fps)."""
+    return num_frames <= max_frames_rife
 
 def build_graph(a):
     g = {
@@ -144,28 +156,25 @@ def main():
         print(f"[gen] WARN AUDIO TRONQUÉ: source={_src_dur}s -> video={tgt}s "
               f"({round(_src_dur - tgt, 1)}s perdus, cap num_frames={a.num_frames}/max_frames={a.max_frames})")
 
-    # ── Garde-fou RAM systeme pour RIFE (anti-OOM longues videos) ────────────────
-    # RIFE (interpolation 25->50fps) est l'accumulateur n1 de RAM systeme et la cause
-    # du SIGKILL (OOM-killer) au-dela de ~55s. Le rendu final MassContent est en 30fps
-    # -> le 50fps est de toute facon re-echantillonne (benefice marginal). On garde donc
-    # RIFE : (a) TOUJOURS sous IT_RIFE_SAFE_FRAMES (plage deja eprouvee en prod -> zero
-    # regression sur les videos courtes) ; (b) au-dela, SEULEMENT si le pic RAM estime
-    # tient dans la RAM dispo du pod (nodes community = RAM heterogenes) ; sinon rendu
-    # 25fps (->30fps au montage), jamais d'OOM. La demi-precision (node 20) aide en plus.
+    # ── Garde-fou anti-OOM RIFE (longues videos) ────────────────────────────────
+    # RIFE (interpolation 25->50fps) est l'accumulateur n1 de RAM et la cause du SIGKILL
+    # (OOM-killer du conteneur) au-dela de ~50s : a 60s, le sampler+decode passent (1500
+    # frames decodees OK) mais RIFE, en DOUBLANT les frames pixel, depasse la limite RAM
+    # du conteneur. Le montage final MassContent etant en 30fps, le 50fps est de toute
+    # facon re-echantillonne (benefice marginal). On garde donc RIFE sous le seuil eprouve
+    # (<=~50s, zero regression sur les videos courtes) et on rend en 25fps (->30fps au
+    # montage) au-dela -> jamais d'OOM, quelle que soit la RAM du conteneur. La RAM
+    # conteneur (cgroup-aware) est loggee pour l'observabilite/calibration. fp16 (node 20)
+    # reduit en plus le pic RAM sur la plage ou RIFE reste active.
     if a.rife and a.rife > 1:
-        safe = int(os.environ.get("IT_RIFE_SAFE_FRAMES") or "1320")  # ~52s : plage eprouvee
-        hr = float(os.environ.get("IT_RIFE_RAM_HEADROOM") or "0.7")
+        max_rife = int(os.environ.get("IT_RIFE_MAX_FRAMES") or "1305")  # ~50s : max eprouve avec RIFE
         avail = avail_ram_gb()
         availr = round(avail, 1) if avail is not None else "?"
-        if a.num_frames <= safe:
-            print(f"[gen] RIFE active (frames={a.num_frames} <= {safe} eprouve ; RAM dispo={availr}Go)", flush=True)
-        elif rife_fits_ram(a.num_frames, a.rife, a.width, a.height, avail, hr):
-            est = round(rife_peak_gb(a.num_frames, a.rife, a.width, a.height), 1)
-            print(f"[gen] RIFE active (pic RAM estime {est}Go <= {hr:.0%}x{availr}Go ; frames={a.num_frames})", flush=True)
+        if rife_decision(a.num_frames, max_rife):
+            print(f"[gen] RIFE active (frames={a.num_frames} <= {max_rife} ; RAM conteneur~{availr}Go)", flush=True)
         else:
-            est = round(rife_peak_gb(a.num_frames, a.rife, a.width, a.height), 1)
-            print(f"[gen] RIFE DESACTIVEE: pic RAM estime {est}Go > {hr:.0%}x{availr}Go dispo "
-                  f"(frames={a.num_frames}) -> rendu 25fps anti-OOM (final 30fps)", flush=True)
+            print(f"[gen] RIFE DESACTIVEE: frames={a.num_frames} > {max_rife} -> rendu 25fps "
+                  f"anti-OOM (final 30fps) ; RAM conteneur~{availr}Go", flush=True)
             a.rife = 0
 
     graph = build_graph(a)
