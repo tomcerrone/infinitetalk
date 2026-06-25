@@ -65,6 +65,19 @@ def rife_decision(num_frames, max_frames_rife):
     limite conteneur est peu observable). <=seuil : RIFE on ; au-dela : 25fps (final 30fps)."""
     return num_frames <= max_frames_rife
 
+
+def audio_is_usable(dur, min_sec):
+    """Audio exploitable ? Rejette None/<=0 (illisible) ET les durees absurdement
+    COURTES. Un audio TRONQUE/corrompu peut etre lu par ffprobe comme une duree valide
+    mais minuscule (ex ~0,6s) : il passerait le check `dur<=0` puis genererait une
+    micro-video degeneree (num_frames de quelques unites << frame_window_size=81 du
+    modele) qui serait UPLOADEE comme un succes (montage + publication d'un clip casse,
+    sans trace). Fail-fast rc=6 (= job FAILED -> retry/orphan) au lieu de livrer un
+    output corrompu, comme pour l'audio vide. min_sec tunable (IT_MIN_AUDIO_SEC, def
+    1.0s) : couvre le canary 6s et la prod 30-60s ; ne rejette que le clairement casse.
+    Pur -> testable sans GPU/ComfyUI."""
+    return dur is not None and dur > 0 and dur >= min_sec
+
 def build_graph(a):
     g = {
       "1": {"class_type":"WanVideoVAELoader","inputs":{"model_name":"Wan2_1_VAE_bf16.safetensors","precision":"bf16"}},
@@ -127,12 +140,17 @@ def main():
 
     if a.num_frames <= 0:
         dur = ffprobe_duration(f"{a.audio_path}/{a.audio}")
-        # Fail-fast si l'audio est illisible/vide : avant, `(dur or 16)` retombait sur 16
-        # frames → un clip de ~0,6s était généré PUIS uploadé comme un succès (montage +
-        # publication d'une vidéo cassée, sans aucune trace). Mieux vaut échouer net
-        # (rc=6 → job FAILED côté MassContent → retry/orphan) que livrer un output corrompu.
-        if not dur or dur <= 0:
-            print(f"[gen] AUDIO ILLISIBLE/VIDE: {a.audio_path}/{a.audio} -> abandon (rc=6)", flush=True)
+        # Fail-fast si l'audio est illisible/vide OU absurdement court (tronqué/corrompu) :
+        # avant, `(dur or 16)` retombait sur 16 frames → un clip de ~0,6s était généré PUIS
+        # uploadé comme un succès (montage + publication d'une vidéo cassée, sans trace).
+        # `audio_is_usable` rejette aussi les durées < IT_MIN_AUDIO_SEC (def 1.0s) : un
+        # fichier tronqué lu comme ~0,6s ne doit pas produire une micro-vidéo dégénérée
+        # (num_frames << frame_window_size=81). Mieux vaut échouer net (rc=6 → job FAILED
+        # côté MassContent → retry/orphan) que livrer un output corrompu en silence.
+        min_audio = float(os.environ.get("IT_MIN_AUDIO_SEC") or "1.0")
+        if not audio_is_usable(dur, min_audio):
+            print(f"[gen] AUDIO ILLISIBLE/VIDE/TROP COURT (dur={dur}s, min={min_audio}s): "
+                  f"{a.audio_path}/{a.audio} -> abandon (rc=6)", flush=True)
             sys.exit(6)
         a.num_frames = min(int(round(dur * a.fps)), a.max_frames)
         print(f"[gen] audio dur={dur}s -> num_frames={a.num_frames}")

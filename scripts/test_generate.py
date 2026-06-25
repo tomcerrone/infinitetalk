@@ -29,6 +29,27 @@ def test_avail_ram_gb_runs():
     assert v is None or (isinstance(v, float) and v > 0)
 
 
+def test_audio_usable_rejects_illisible_et_vide():
+    # None (ffprobe KO) ou <=0 -> rejete (rc=6), comportement historique conserve.
+    assert g.audio_is_usable(None, 1.0) is False
+    assert g.audio_is_usable(0, 1.0) is False
+    assert g.audio_is_usable(-1, 1.0) is False
+
+
+def test_audio_usable_rejects_trop_court():
+    # Audio valide mais minuscule (tronque/corrompu, ex 0,6s) -> rejete (le cas confirme).
+    assert g.audio_is_usable(0.6, 1.0) is False
+    assert g.audio_is_usable(0.99, 1.0) is False
+
+
+def test_audio_usable_accepts_canary_et_prod():
+    # Canary 6s + prod 30-60s = exploitables (zero regression sur les durees legitimes).
+    assert g.audio_is_usable(1.0, 1.0) is True   # pile au seuil
+    assert g.audio_is_usable(6.0, 1.0) is True    # canary
+    assert g.audio_is_usable(45.0, 1.0) is True   # mediane prod
+    assert g.audio_is_usable(60.0, 1.0) is True   # max prod
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in fns:
