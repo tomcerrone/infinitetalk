@@ -55,12 +55,19 @@ terminate_pod(){
 }
 
 # Provisioning idempotent — UNE fois (skip ce qui existe déjà → réutilisable si
-# network volume v2). Borné à 30 min : un hang de download (Xet cross-host connu)
-# ne doit pas brûler le GPU indéfiniment. rc 124 = timeout dépassé → auto-terminate.
-SAGE_ARCH="${SAGE_ARCH:-12.0}" timeout 1800 bash "$REPO/scripts/setup-prod.sh"
+# network volume v2). Borné par IT_SETUP_TIMEOUT (défaut 1800s = 30 min) : un hang
+# de download (Xet cross-host connu) ne doit pas brûler le GPU indéfiniment. rc 124
+# = timeout dépassé → auto-terminate. NB : le PREMIER peuplement d'un NETWORK VOLUME
+# vide est plus lourd (écriture des ~33 Go + venv + SageAttention compilée vers un
+# disque réseau plus lent que l'éphémère) et dépasse souvent 30 min → l'orchestrateur
+# passe IT_SETUP_TIMEOUT plus élevé quand un volume est monté (cf runpod.ts). Une
+# fois le volume amorcé (sentinel posé), les boots suivants prennent le FAST-PATH
+# (quasi-instantané) et n'approchent jamais ce plafond.
+IT_SETUP_TIMEOUT="${IT_SETUP_TIMEOUT:-1800}"
+SAGE_ARCH="${SAGE_ARCH:-12.0}" timeout "$IT_SETUP_TIMEOUT" bash "$REPO/scripts/setup-prod.sh"
 setup_rc=$?
 if [ "$setup_rc" = "124" ]; then
-  log "setup-prod.sh TIMEOUT 1800s (hang download probable) -> auto-terminate"
+  log "setup-prod.sh TIMEOUT ${IT_SETUP_TIMEOUT}s (hang download probable) -> auto-terminate"
   terminate_pod; sleep 3600; exit 1
 fi
 [ "$setup_rc" != "0" ] && log "WARN setup rc=$setup_rc"
