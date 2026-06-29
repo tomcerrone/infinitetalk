@@ -6,7 +6,7 @@ name: build-comfy-image
 on:
   workflow_dispatch: {}
   push:
-    branches: [main]
+    branches: [main, feat/slim-image]
     paths:
       - 'Dockerfile'
       - 'scripts/setup-prod.sh'
@@ -47,5 +47,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ghcr.io/tomcerrone/infinitetalk-comfy:latest
+          # main -> :latest (prod) ; branche feat/slim-image -> :slim-test (validation
+          # d'un pod isolé AVANT de promouvoir en :latest, cf. build multi-étages).
+          tags: ghcr.io/tomcerrone/infinitetalk-comfy:${{ github.ref == 'refs/heads/main' && 'latest' || 'slim-test' }}
           provenance: false

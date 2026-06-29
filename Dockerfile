@@ -1,31 +1,48 @@
 # Image custom InfiniteTalk : ComfyUI + custom nodes + venv + SageAttention
-# pré-installés (PAS les modèles 33 Go, téléchargés au runtime). Permet un
-# cold-start ~2× plus court sur N'IMPORTE QUEL cloud RunPod (Community inclus),
-# sans dépendre d'un network volume Secure (rare).
+# pré-installés (PAS les modèles 33 Go, téléchargés au runtime depuis le miroir R2).
 #
-# Réutilise scripts/setup-prod.sh en mode IT_ENV_ONLY (source unique de vérité) :
-# il installe ComfyUI + nodes + venv + SageAttention sous /workspace puis s'arrête
-# avant les modèles et le démarrage. Au runtime, boot.sh relance setup-prod.sh qui
-# saute les installs (déjà présents) et ne fait que modèles + démarrage ComfyUI.
+# BUILD MULTI-ÉTAGES (2026-06-29) pour ~HALVER la taille de l'image (≈10,5 Go ->
+# ≈5,3 Go) et donc le temps de PULL sur TOUS les fournisseurs (surtout Vast/Clore
+# au débit bridé, où le pull de 10,5 Go dépassait la grâce zombie de 30 min) :
+#   - stage `build` : base DEVEL (nvcc + headers) — compile SageAttention (sm_120)
+#     + installe ComfyUI + nodes + venv sous /workspace via setup-prod.sh ENV_ONLY.
+#   - stage final   : base RUNTIME (~4,2 Go vs ~9,4 Go devel ; CUDA runtime + cudnn,
+#     SANS toolkit/nvcc/headers) — on COPIE juste /workspace (venv avec SageAttention
+#     DÉJÀ compilé). Le .so de sage tourne au runtime sans nvcc.
 #
-# Base = image PyTorch officielle DEVEL (torch 2.7.1 + CUDA 12.8 COHÉRENTS, nvcc
-# inclus). On n'utilise PAS runpod/pytorch:1.0.3-cu1281 : son torch est compilé
-# cu130 alors que seul le toolkit nvcc 12.8 est présent -> SageAttention ne
-# compile pas dessus ("CUDA version mismatch"). CUDA 12.8 supporte le 5090 (sm_120).
-FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
+# Base DEVEL (build) : torch 2.7.1 + CUDA 12.8 cohérents, nvcc inclus (sinon
+# SageAttention ne compile pas, "CUDA version mismatch"). CUDA 12.8 = sm_120 (5090).
+# Base RUNTIME (final) : MÊME torch/CUDA -> le venv --system-site-packages hérite
+# du torch de l'image, identique entre les 2 bases (pas de divergence de version).
 
-# SageAttention cible l'arch Blackwell/5090 (compilation nvcc, sans GPU au build).
+# ---- Stage 1 : build (devel, nvcc) ----
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS build
 ENV IT_ENV_ONLY=1 \
     SAGE_ARCH=12.0 \
     DEBIAN_FRONTEND=noninteractive
-
 COPY scripts/setup-prod.sh /tmp/setup-prod.sh
 RUN chmod +x /tmp/setup-prod.sh && bash /tmp/setup-prod.sh && \
     test -f /workspace/.env-ready && \
     /workspace/venv/bin/python -c "import sageattention; print('sage OK in image')" && \
     /workspace/venv/bin/python -c "import hf_xet; print('hf_xet OK in image')"
 
-# Réinitialise IT_ENV_ONLY pour le runtime (le full setup doit s'exécuter :
-# modèles + démarrage). Le dockerStartCmd réel est fourni INLINE au create du pod
-# par l'orchestrateur MassContent (src/lib/runpod/runpod.ts) — pas de template RunPod.
-ENV IT_ENV_ONLY=0
+# ---- Stage 2 : runtime (allégé, sans nvcc) ----
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
+ENV IT_ENV_ONLY=0 \
+    SAGE_ARCH=12.0 \
+    DEBIAN_FRONTEND=noninteractive
+# Outils système requis au runtime par boot.sh/setup-prod.sh (git clone du repo,
+# aria2c pour les modèles R2, ffmpeg pour l'encodage). Bakés ici pour ne pas les
+# re-télécharger à chaque boot (la base runtime ne les inclut pas).
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      git ffmpeg aria2 wget curl ca-certificates && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+# Tout le provisioning (ComfyUI + nodes + venv + SageAttention compilé) vit sous
+# /workspace. Au boot, setup-prod.sh détecte tout présent (fast skip des installs)
+# et ne fait que les modèles (miroir R2) + le démarrage de ComfyUI.
+COPY --from=build /workspace /workspace
+# Smoke check à la construction (sans GPU) : sage + hf_xet importables sur la base
+# RUNTIME -> détecte une lib runtime manquante AVANT la prod (build échoue = :latest
+# inchangé). La génération réelle (GPU) reste validée par un pod de test.
+RUN /workspace/venv/bin/python -c "import sageattention; print('sage OK runtime')" && \
+    /workspace/venv/bin/python -c "import hf_xet; print('hf_xet OK runtime')"
