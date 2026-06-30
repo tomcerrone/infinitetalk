@@ -38,7 +38,7 @@ FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS build
 ENV IT_ENV_ONLY=1 \
     SAGE_ARCH="8.9;12.0+PTX" \
     EXT_PARALLEL=1 \
-    MAX_JOBS=2 \
+    MAX_JOBS=1 \
     DEBIAN_FRONTEND=noninteractive
 COPY scripts/setup-prod.sh /tmp/setup-prod.sh
 # Smoke-test RENFORCÉ : `import sageattention` réussit MÊME si un noyau manque (modules
