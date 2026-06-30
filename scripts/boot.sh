@@ -105,10 +105,15 @@ fi
 
 # Worker en boucle : redémarre si crash (rc != 0). rc 0 = idle exit volontaire.
 # worker.log sous /workspace/logs (servi par 8189 ; pas de PII dans les logs).
+# Sortie DUPLIQUÉE vers worker.log ET stdout (tee) : RunPod a le proxy 8189 pour
+# lire worker.log, mais Novita/Vast NON → router la sortie du worker vers stdout la
+# rend visible dans le journal natif du conteneur (instanceLog Novita / logs Vast),
+# indispensable pour diagnostiquer un worker qui ne réclame pas. rc = code de SORTIE
+# DU WORKER (PIPESTATUS[0], pas celui de tee) pour préserver la relance-si-crash.
 log "ComfyUI up -> worker loop"
 while true; do
-  python3 -u /workspace/worker.py >> "$LOGS/worker.log" 2>&1
-  rc=$?
+  python3 -u /workspace/worker.py 2>&1 | tee -a "$LOGS/worker.log"
+  rc=${PIPESTATUS[0]}
   log "worker exited rc=$rc"
   [ "$rc" = "0" ] && break
   sleep 5
