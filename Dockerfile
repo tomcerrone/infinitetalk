@@ -30,11 +30,15 @@ FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS build
 # (=Triton, 3090/A6000, aucun noyau requis) et 8.0/9.0 (mélanger sm80 au sm89 = SASS
 # invalide, défaut amont #360). EXT_PARALLEL/MAX_JOBS/NVCC threads bornent la conso
 # mémoire du compile multi-gencode (_qattn_sm89 = 7 .cu × 2 gencodes) pour ne pas OOM.
+# Parallélisme du compile VOLONTAIREMENT BAS : le runner GitHub n'a que ~16 Go RAM.
+# Compiler _qattn_sm89 (7 .cu) pour 2 gencodes (8.9 ET 12.0) à fort parallélisme a
+# OOM-killé le build (2026-06-30, --threads 8 doublait la mémoire/nvcc). MAX_JOBS=2 +
+# EXT_PARALLEL=1 + nvcc mono-thread = compile quasi-série, plus LENT (~15-30 min) mais
+# qui TIENT en mémoire (≈ le build sm_120-seul historique qui passait à 4 jobs/1 gencode).
 ENV IT_ENV_ONLY=1 \
     SAGE_ARCH="8.9;12.0+PTX" \
-    EXT_PARALLEL=2 \
-    MAX_JOBS=4 \
-    NVCC_APPEND_FLAGS="--threads 8" \
+    EXT_PARALLEL=1 \
+    MAX_JOBS=2 \
     DEBIAN_FRONTEND=noninteractive
 COPY scripts/setup-prod.sh /tmp/setup-prod.sh
 # Smoke-test RENFORCÉ : `import sageattention` réussit MÊME si un noyau manque (modules
