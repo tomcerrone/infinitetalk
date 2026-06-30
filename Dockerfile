@@ -37,13 +37,19 @@ FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 ENV IT_ENV_ONLY=0 \
     SAGE_ARCH=12.0 \
     DEBIAN_FRONTEND=noninteractive
-# Outils système requis au runtime par boot.sh/setup-prod.sh (git clone du repo,
-# aria2c pour les modèles R2, ffmpeg pour l'encodage) + libs système d'OpenCV
-# (libGL/glib/X) dont dépend cv2 importé par ComfyUI au démarrage. La base runtime
-# ne les inclut pas -> on les bake ici (le boot ne les re-télécharge pas).
+# Outils système requis au runtime :
+#  - git/aria2/ffmpeg/wget/curl : boot.sh/setup-prod.sh (clone, modèles R2, encodage).
+#  - libGL/glib/X (libgl1...) : cv2 (OpenCV) importé par ComfyUI au démarrage.
+#  - gcc/g++ : le ComfyUI récent fait de la compilation NATIVE À LA VOLÉE au 1er
+#    import (comfy_kitchen -> Triton JIT compile son driver CUDA). La base runtime
+#    n'a PAS de compilateur C (contrairement à la base devel) -> ComfyUI crashait
+#    "Failed to find C compiler" -> 0 génération. Triton embarque ses en-têtes CUDA
+#    et le pilote (libcuda) est présent sur le nœud GPU : gcc/g++ suffisent. (+~250 Mo,
+#    l'image reste ~moitié de la devel.)
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
       git ffmpeg aria2 wget curl ca-certificates \
-      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 && \
+      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+      gcc g++ python3-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 # Tout le provisioning (ComfyUI + nodes + venv + SageAttention compilé) vit sous
 # /workspace. Au boot, setup-prod.sh détecte tout présent (fast skip des installs)
