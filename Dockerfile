@@ -24,7 +24,7 @@
 # ---- Stage 1 : build (devel, nvcc) ----
 FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS build
 ENV IT_ENV_ONLY=1 \
-    SAGE_ARCH=12.0 \
+    SAGE_ARCH="8.0 8.6 8.9 9.0 12.0" \
     DEBIAN_FRONTEND=noninteractive
 COPY scripts/setup-prod.sh /tmp/setup-prod.sh
 RUN chmod +x /tmp/setup-prod.sh && bash /tmp/setup-prod.sh && \
@@ -35,7 +35,7 @@ RUN chmod +x /tmp/setup-prod.sh && bash /tmp/setup-prod.sh && \
 # ---- Stage 2 : runtime (allégé, sans nvcc) ----
 FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime
 ENV IT_ENV_ONLY=0 \
-    SAGE_ARCH=12.0 \
+    SAGE_ARCH="8.0 8.6 8.9 9.0 12.0" \
     DEBIAN_FRONTEND=noninteractive
 # Outils système requis au runtime :
 #  - git/aria2/ffmpeg/wget/curl : boot.sh/setup-prod.sh (clone, modèles R2, encodage).

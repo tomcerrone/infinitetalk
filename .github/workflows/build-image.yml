@@ -6,7 +6,7 @@ name: build-comfy-image
 on:
   workflow_dispatch: {}
   push:
-    branches: [main, slim-image-v2]
+    branches: [main, slim-image-v2, sage-multiarch]
     paths:
       - 'Dockerfile'
       - 'scripts/setup-prod.sh'
