@@ -84,7 +84,16 @@ if [ -f "$SENTINEL" ] && [ "$PY" = "$VENV/bin/python" ] && sage_ok && model_ok; 
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git ffmpeg aria2 wget curl python3-venv >/dev/null 2>&1 || log "WARN apt"
+# Outils système : DÉJÀ présents dans l'image (installés au build). On saute apt par
+# défaut -> certains hôtes (ex Novita) ont un réseau apt restreint où `apt-get update`
+# HANG sans fin -> setup figé après "python=" et le pod ne réclame jamais de travail.
+# Filet : si un binaire manque vraiment, apt borné par `timeout` (jamais de hang infini).
+if command -v git >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1 && command -v aria2c >/dev/null 2>&1 && command -v wget >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  log "apt skip (git/ffmpeg/aria2/wget/curl déjà présents dans l'image)"
+else
+  log "apt: install des outils manquants (borné à 120s)"
+  timeout 120 bash -c 'apt-get update -qq && apt-get install -y -qq git ffmpeg aria2 wget curl python3-venv' >/dev/null 2>&1 && log "apt OK" || log "WARN apt (timeout/échec) -> on continue"
+fi
 # Réessayer le venv si python3-venv manquait au premier essai.
 if [ "$PY" != "$VENV/bin/python" ] && ensure_venv; then PY="$VENV/bin/python"; log "venv OK après apt -> python=$PY"; fi
 
