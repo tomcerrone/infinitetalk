@@ -31,10 +31,12 @@ FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS build
 # invalide, défaut amont #360). EXT_PARALLEL/MAX_JOBS/NVCC threads bornent la conso
 # mémoire du compile multi-gencode (_qattn_sm89 = 7 .cu × 2 gencodes) pour ne pas OOM.
 # Parallélisme du compile VOLONTAIREMENT BAS : le runner GitHub n'a que ~16 Go RAM.
-# Compiler _qattn_sm89 (7 .cu) pour 2 gencodes (8.9 ET 12.0) à fort parallélisme a
-# OOM-killé le build (2026-06-30, --threads 8 doublait la mémoire/nvcc). MAX_JOBS=2 +
-# EXT_PARALLEL=1 + nvcc mono-thread = compile quasi-série, plus LENT (~15-30 min) mais
-# qui TIENT en mémoire (≈ le build sm_120-seul historique qui passait à 4 jobs/1 gencode).
+# CAUSE RACINE des 3 OOM du 2026-06-30 : setup-prod.sh écrasait MAX_JOBS par $(nproc)
+# -> les caps posés ici (2 puis 1) n'ont JAMAIS été appliqués, le compile tournait à
+# 4 nvcc 2-gencodes concurrents (>16 Go) et le kernel tuait l'agent du runner (log
+# coupé net). Fix : setup-prod.sh respecte désormais un MAX_JOBS pré-posé -> ce
+# MAX_JOBS=1 est réellement effectif (1 seul nvcc à la fois, quasi-série, ~20-40 min)
+# + swap 16 Go ajouté au workflow (un pic ralentit au lieu de tuer).
 ENV IT_ENV_ONLY=1 \
     SAGE_ARCH="8.9;12.0+PTX" \
     EXT_PARALLEL=1 \

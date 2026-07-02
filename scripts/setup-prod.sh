@@ -137,7 +137,11 @@ done
 : "${CUDA_HOME:=/usr/local/cuda}"
 export PATH="$CUDA_HOME/bin:$PATH"
 log "CUDA_HOME=$CUDA_HOME nvcc=$("$CUDA_HOME/bin/nvcc" --version 2>/dev/null | grep -oE 'release [0-9.]+' | head -1)"
-export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH:-12.0}"; export MAX_JOBS="$(nproc)"
+# MAX_JOBS : RESPECTER une valeur déjà posée (le Dockerfile borne à 1 sur le runner
+# GitHub 16 Go pour le compile sage multi-gencode ; l'écraser par $(nproc) ici a rendu
+# les caps anti-OOM inopérants -> 3 builds OOM-killés "à MAX_JOBS=1" qui tournaient en
+# réalité à 4). Au runtime pod (env non posée) : nproc, comportement inchangé.
+export TORCH_CUDA_ARCH_LIST="${SAGE_ARCH:-12.0}"; export MAX_JOBS="${MAX_JOBS:-$(nproc)}"
 if [ "$IT_ATTENTION" = "sdpa" ]; then
   log "IT_ATTENTION=sdpa -> skip build/check SageAttention (GPU non-Blackwell)"
 else

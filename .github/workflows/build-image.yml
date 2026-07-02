@@ -36,6 +36,22 @@ jobs:
           docker image prune -af || true
           df -h /
 
+      # Swap 16 Go sur le disque temporaire /mnt (≈65 Go libres, hors espace de build) :
+      # le compile SageAttention multi-gencode (noyau _qattn_sm89, 7 .cu × 2 gencodes)
+      # peut dépasser ponctuellement les ~16 Go RAM du runner — sans swap le kernel
+      # OOM-kill l'agent du runner (log coupé net, 3 échecs 2026-06-30). Avec swap,
+      # un pic mémoire ralentit le build au lieu de le tuer. Complète MAX_JOBS=1
+      # (Dockerfile), désormais réellement appliqué (setup-prod.sh le respecte).
+      - name: Add swap
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile || true
+          sudo fallocate -l 16G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       # Tag = latest sur main (prod), candidate sur toute autre branche (validation
       # d'un pod de test AVANT promotion en :latest). Évite de casser la prod avec
       # une image non validée (revert 2026-06-29).
