@@ -184,6 +184,25 @@ def audio_seconds(path):
         pass
     return None
 
+def download_asset(url, path, label):
+    # Téléchargement ROBUSTE des assets (image/audio) depuis l'URL présignée S3.
+    # AVANT : urllib.request.urlretrieve (0 retry, timeout socket 180s) → un blip
+    # réseau pod↔S3 (connect timeout Errno 110, vécu en burst 2026-07-11 : toutes
+    # les générations échouaient sur `<urlopen error [Errno 110] Connection timed
+    # out>` sans rattrapage) tuait la génération entière. curl avec retries sur
+    # erreurs transitoires (timeout de connexion inclus) + connect-timeout court =
+    # résilience alignée sur l'upload S3 (curl plus bas). --retry couvre le connect
+    # timeout ; --retry-connrefused ajoute le refus de connexion.
+    r = subprocess.run(
+        ["curl", "-fsS", "--location",
+         "--connect-timeout", "20", "--max-time", "300",
+         "--retry", "6", "--retry-delay", "4", "--retry-connrefused",
+         "-o", path, url],
+        capture_output=True, text=True, timeout=360,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"download {label} echec rc={r.returncode}: {(r.stderr or '')[-300:]}")
+
 def process(job):
     vid = job["videoId"]
     jid = job["jobId"]
@@ -194,8 +213,8 @@ def process(job):
     aud_path = f"{INPUT_DIR}/{vid}.mp3"
     log(f"job {jid} video={vid} {w}x{h}")
     progress(jid, podId=POD_ID, status="running", note=f"start {w}x{h}")
-    urllib.request.urlretrieve(job["imageUrl"], img_path)
-    urllib.request.urlretrieve(job["audioUrl"], aud_path)
+    download_asset(job["imageUrl"], img_path, "image")
+    download_asset(job["audioUrl"], aud_path, "audio")
     aud_sec = audio_seconds(aud_path)  # mesuré AVANT le cleanup → coût/GPU normalisé
     progress(jid, note="assets téléchargés, génération en cours")
     cmd = ["python3", GEN, "--image", f"{vid}.png", "--audio", f"{vid}.mp3",
