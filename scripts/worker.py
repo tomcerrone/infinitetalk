@@ -266,16 +266,20 @@ def run_generate(cmd, jid, t0, extra_env=None):
     # impossible de savoir, devant un echec, avec quel reglage il avait tourne. On
     # les capte des la sortie et on les recolle a CHAQUE note de progression : un
     # echec redevient auto-diagnosticable.
-    ident = {"txt": ""}
+    # On garde DEUX faits, pas un : le nombre d'images (la charge) et la decision
+    # d'interpolation (le facteur x2 de memoire). L'un sans l'autre ne suffit pas a
+    # expliquer un manque de memoire.
+    ident = {"frames": "", "rife": "", "txt": ""}
 
     def _capture_identity(line):
-        if ident["txt"]:
+        if "[gen] num_frames aligne=" in line and not ident["frames"]:
+            ident["frames"] = line.split("num_frames aligne=", 1)[1].split(",", 1)[0].strip()
+        elif "[gen] RIFE" in line and not ident["rife"]:
+            ident["rife"] = "interpolation coupee" if "DESACTIVEE" in line or "FORCEE A OFF" in line else "interpolation active"
+        else:
             return
-        # La decision d'interpolation ET le nombre d'images : les deux chiffres qui
-        # expliquent un manque de memoire. Le nombre d'images sert de repli quand la
-        # ligne d'interpolation n'a pas ete emise.
-        if "[gen] RIFE" in line or "[gen] num_frames aligne=" in line:
-            ident["txt"] = line.replace("[gen] ", "").strip()[:120]
+        bouts = [b for b in (f"{ident['frames']} images" if ident["frames"] else "", ident["rife"]) if b]
+        ident["txt"] = " · ".join(bouts)[:120]
 
     HARD_KILL_S = 7200
     def _heartbeat():
@@ -293,6 +297,7 @@ def run_generate(cmd, jid, t0, extra_env=None):
     try:
         for line in p.stdout:
             lines.append(line.rstrip("\n"))
+            _capture_identity(lines[-1])
             if len(lines) > 500:
                 lines = lines[-500:]
     finally:
