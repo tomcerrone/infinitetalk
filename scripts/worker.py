@@ -258,6 +258,25 @@ def run_generate(cmd, jid, t0, extra_env=None):
     # sortie, ni EOF). Sans ce kill thread-side, un tel gel ne serait vu qu'au
     # watchdog zombie MassContent (180min). On tue à 7200s → la boucle stdout sort
     # sur EOF, returncode != 0, chemin d'échec standard.
+    # ── L'IDENTITE DU RUN, REPETEE A CHAQUE BATTEMENT (07/08/2026) ──────────────
+    # Le serveur ne garde que les 80 derniers battements, et chaque battement ne
+    # porte que les 12 dernieres lignes de sortie. Les lignes de DEBUT — celles qui
+    # disent le nombre d'images et si l'interpolation a ete coupee — etaient donc
+    # TOUJOURS ecrasees avant la fin d'une generation de 30 minutes. Resultat :
+    # impossible de savoir, devant un echec, avec quel reglage il avait tourne. On
+    # les capte des la sortie et on les recolle a CHAQUE note de progression : un
+    # echec redevient auto-diagnosticable.
+    ident = {"txt": ""}
+
+    def _capture_identity(line):
+        if ident["txt"]:
+            return
+        # La decision d'interpolation ET le nombre d'images : les deux chiffres qui
+        # expliquent un manque de memoire. Le nombre d'images sert de repli quand la
+        # ligne d'interpolation n'a pas ete emise.
+        if "[gen] RIFE" in line or "[gen] num_frames aligne=" in line:
+            ident["txt"] = line.replace("[gen] ", "").strip()[:120]
+
     HARD_KILL_S = 7200
     def _heartbeat():
         while not done.wait(HEARTBEAT_S):
@@ -265,8 +284,9 @@ def run_generate(cmd, jid, t0, extra_env=None):
                 log(f"HARD KILL generate.py après {HARD_KILL_S}s (gel ?)")
                 p.kill()
                 return
+            suffixe = f" · {ident['txt']}" if ident["txt"] else ""
             progress(jid, logsTail="\n".join(lines[-12:]),
-                     note=f"génération {int(time.time()-t0)}s")
+                     note=f"génération {int(time.time()-t0)}s{suffixe}")
 
     hb_thread = threading.Thread(target=_heartbeat, daemon=True)
     hb_thread.start()
