@@ -126,6 +126,34 @@ def wait_comfy(max_s=900):
             time.sleep(3)
     return False
 
+
+def comfy_alive(timeout=5):
+    """ComfyUI répond-il MAINTENANT ? (ping court, sans attente)."""
+    try:
+        urllib.request.urlopen(COMFY + "/system_stats", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def restart_comfy():
+    """Relance ComfyUI sur ce pod. Renvoie True s'il répond après la relance.
+
+    POURQUOI (07/08/2026). ComfyUI n'était lancé QU'UNE FOIS, au provisioning. Quand il
+    se faisait tuer par le OOM-killer en fin de génération (cause n°1 des échecs), il ne
+    redémarrait JAMAIS : le pod restait allumé et facturé, continuait à réclamer des
+    jobs, et les faisait tous échouer en ~2 min sur « Connection refused ». 14 échecs de
+    ce type mesurés en prod du 03 au 07/08. Relancer coûte ~1 min et récupère un pod
+    déjà provisionné (dont le boot a coûté 40 min)."""
+    log("ComfyUI injoignable -> relance")
+    try:
+        r = subprocess.run(["bash", "/workspace/setup-prod.sh", "--restart-comfy"],
+                           capture_output=True, text=True, timeout=420)
+        log(f"relance ComfyUI rc={r.returncode} {(r.stdout or '')[-300:]}")
+    except Exception as e:
+        log("relance ComfyUI a échoué:", e)
+    return wait_comfy(max_s=180)
+
 def claim():
     # provider + GPU en query → MassContent tamponne le fournisseur ET le GPU effectif
     # du pod DÈS le claim (avant le 1er heartbeat) : chaque job porte son backend +
@@ -203,34 +231,24 @@ def download_asset(url, path, label):
     if r.returncode != 0:
         raise RuntimeError(f"download {label} echec rc={r.returncode}: {(r.stderr or '')[-300:]}")
 
-def process(job):
-    vid = job["videoId"]
-    jid = job["jobId"]
-    w = int(job.get("width", 720))
-    h = int(job.get("height", 1280))
-    prompt = job.get("prompt") or DEFAULT_PROMPT
-    img_path = f"{INPUT_DIR}/{vid}.png"
-    aud_path = f"{INPUT_DIR}/{vid}.mp3"
-    log(f"job {jid} video={vid} {w}x{h}")
-    progress(jid, podId=POD_ID, status="running", note=f"start {w}x{h}")
-    download_asset(job["imageUrl"], img_path, "image")
-    download_asset(job["audioUrl"], aud_path, "audio")
-    aud_sec = audio_seconds(aud_path)  # mesuré AVANT le cleanup → coût/GPU normalisé
-    progress(jid, note="assets téléchargés, génération en cours")
-    cmd = ["python3", GEN, "--image", f"{vid}.png", "--audio", f"{vid}.mp3",
-           "--width", str(w), "--height", str(h), "--prompt", prompt,
-           "--prefix", f"it_{vid}"] + GEN_ARGS
 
-    # Popen + lecture stdout en flux (logsTail) + heartbeat sur THREAD dédié :
-    # le signal de vie ne dépend PAS du stdout de generate.py (une phase muette
-    # >20min — tqdm en \r, VAE decode long — ferait tuer un job sain par le
-    # watchdog MassContent qui considère mort tout job silencieux 20min).
-    # errors="replace" : un octet non-UTF8 (lib C, tqdm corrompu) devient � au
-    # lieu de lever dans la boucle (sinon le process generate.py survivrait
-    # orphelin, pipe pleine, et le worker enchaînerait un 2e job en // → OOM).
-    t0 = time.time()
+def run_generate(cmd, jid, t0, extra_env=None):
+    """Lance generate.py, renvoie (returncode, lignes de sortie).
+
+    Popen + lecture stdout en flux (logsTail) + heartbeat sur THREAD dédié : le signal
+    de vie ne dépend PAS du stdout de generate.py (une phase muette >20min — tqdm en \\r,
+    VAE decode long — ferait tuer un job sain par le watchdog MassContent qui considère
+    mort tout job silencieux 20min). errors="replace" : un octet non-UTF8 (lib C, tqdm
+    corrompu) devient ? au lieu de lever dans la boucle (sinon le process generate.py
+    survivrait orphelin, pipe pleine, et le worker enchaînerait un 2e job en // → OOM).
+
+    `t0` est l'horloge du JOB (pas de l'essai) : la chaîne de timeouts et l'affichage de
+    durée restent bornés même quand un 2e essai (repli sans RIFE) est lancé."""
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, errors="replace", bufsize=1)
+                         text=True, errors="replace", bufsize=1, env=env)
     lines = []
     done = threading.Event()
 
@@ -268,12 +286,57 @@ def process(job):
     except subprocess.TimeoutExpired:
         p.kill()
         raise RuntimeError(f"generate.py timeout {HARD_KILL_S}s")
+    return p.returncode, lines
+
+
+def process(job):
+    vid = job["videoId"]
+    jid = job["jobId"]
+    w = int(job.get("width", 720))
+    h = int(job.get("height", 1280))
+    prompt = job.get("prompt") or DEFAULT_PROMPT
+    img_path = f"{INPUT_DIR}/{vid}.png"
+    aud_path = f"{INPUT_DIR}/{vid}.mp3"
+    log(f"job {jid} video={vid} {w}x{h}")
+    progress(jid, podId=POD_ID, status="running", note=f"start {w}x{h}")
+    download_asset(job["imageUrl"], img_path, "image")
+    download_asset(job["audioUrl"], aud_path, "audio")
+    aud_sec = audio_seconds(aud_path)  # mesuré AVANT le cleanup → coût/GPU normalisé
+    progress(jid, note="assets téléchargés, génération en cours")
+    cmd = ["python3", GEN, "--image", f"{vid}.png", "--audio", f"{vid}.mp3",
+           "--width", str(w), "--height", str(h), "--prompt", prompt,
+           "--prefix", f"it_{vid}"] + GEN_ARGS
+
+    t0 = time.time()
+    rc, lines = run_generate(cmd, jid, t0)
     full = "\n".join(lines)
+
+    # ── REPLI SANS RIFE (07/08/2026) ────────────────────────────────────────────
+    # rc=5 = ComfyUI est devenu injoignable en cours de route, c'est-à-dire tué par
+    # le OOM-killer du conteneur. Quand RIFE (interpolation 25→50 fps) était active,
+    # elle est l'accumulateur de RAM n°1 : c'est elle qui fait déborder. Plutôt que de
+    # jeter le pod (et de repayer un boot de 40 min ailleurs, sur un pod qui a la même
+    # chance d'échouer), on relance ComfyUI et on REJOUE le MÊME job sans RIFE sur ce
+    # pod déjà chaud. La vidéo sort en 25 fps — ré-échantillonnée à 30 fps au montage,
+    # exactement comme toutes les vidéos longues le sont déjà aujourd'hui.
+    if rc == 5 and "[gen] RIFE active" in full:
+        log("crash ComfyUI avec RIFE active -> relance + 2e essai SANS RIFE (même pod)")
+        progress(jid, note="ComfyUI a manqué de mémoire — nouvel essai sans interpolation",
+                 logsTail="\n".join(lines[-12:]))
+        if restart_comfy():
+            rc2, lines2 = run_generate(cmd, jid, t0, extra_env={"IT_FORCE_NO_RIFE": "1"})
+            if rc2 == 0:
+                log("2e essai sans RIFE : réussi")
+            rc, lines = rc2, lines2
+            full = "\n".join(lines)
+        else:
+            log("ComfyUI n'est pas reparti -> pas de 2e essai")
+
     sys.stdout.write(full[-2000:] + "\n")
     sys.stdout.flush()
-    if p.returncode != 0:
-        progress(jid, note=f"generate ÉCHEC rc={p.returncode}", logsTail="\n".join(lines[-15:]))
-        raise RuntimeError(f"generate rc={p.returncode}: {full[-500:]}")
+    if rc != 0:
+        progress(jid, note=f"generate ÉCHEC rc={rc}", logsTail="\n".join(lines[-15:]))
+        raise RuntimeError(f"generate rc={rc}: {full[-500:]}")
 
     # Contrat de sortie : generate.py imprime "[gen] DONE in <s>s -> <path>"
     # (dernière ligne utile). Ne pas changer ce format d'un côté sans l'autre.
@@ -344,6 +407,17 @@ def main():
     log("ComfyUI up — worker démarré")
     idle = 0
     while True:
+        # GARDE « pod empoisonné » : ne JAMAIS réclamer un job si ComfyUI est mort.
+        # Sans elle, un pod dont ComfyUI a été OOM-killed continuait à prendre des jobs
+        # et à les faire échouer en ~2 min chacun, en cascade, tout en restant facturé.
+        # On tente une relance ; si le serveur ne repart pas, le pod ne sert plus à rien
+        # → on le coupe au lieu de brûler du GPU.
+        if not comfy_alive():
+            if not restart_comfy():
+                log("ComfyUI ne repart pas -> arrêt du pod (inutile et facturé)")
+                self_terminate()
+                return
+            log("ComfyUI relancé -> reprise des réclamations")
         try:
             r = claim()
         except Exception as e:

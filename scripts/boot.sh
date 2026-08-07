@@ -23,6 +23,9 @@ log "env: SECRET=$([ -n "${PIPELINE_SECRET:-}" ] && echo set || echo MISSING) PO
 # Scripts à l'emplacement attendu par worker.py (GEN=/workspace/generate.py).
 cp -f "$REPO/scripts/worker.py" /workspace/worker.py
 cp -f "$REPO/scripts/generate.py" /workspace/generate.py
+# Copié à un emplacement STABLE pour que worker.py puisse relancer ComfyUI seul
+# (`--restart-comfy`) sans connaître l'emplacement du clone.
+cp -f "$REPO/scripts/setup-prod.sh" /workspace/setup-prod.sh
 
 # PV-003 : auto-terminaison via l'endpoint MassContent (le pod n'a plus la clé
 # RunPod compte-entier). Auth par PIPELINE_SECRET (déjà sur le pod) ; c'est le

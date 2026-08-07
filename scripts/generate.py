@@ -58,12 +58,45 @@ def avail_ram_gb():
         cands.append(max(0, lim1 - cur1))
     return min(cands) / (1024 ** 3) if cands else None
 
-def rife_decision(num_frames, max_frames_rife):
-    """RIFE (interpolation 25->50fps) active ? Decision par SEUIL DE FRAMES empirique :
-    au-dela, l'accumulation pixels de RIFE sature la RAM du conteneur et fait OOM-killer
-    (SIGKILL) ComfyUI. Deterministe -> fiable, contrairement a une estimation RAM (la
-    limite conteneur est peu observable). <=seuil : RIFE on ; au-dela : 25fps (final 30fps)."""
-    return num_frames <= max_frames_rife
+def rife_ram_need_gb(num_frames, width, height, with_rife, safety=1.6):
+    """RAM systeme (Go) necessaire a la chaine PIXEL de fin de graphe.
+
+    Modele mesure (720x1280) : chaque frame decodee est un tenseur IMAGE float32
+    H*W*3*4 octets (~11 Mo). WanVideoDecode materialise les N frames, puis :
+      - sans RIFE  : VHS_VideoCombine encode ces N frames         -> ~N * 11 Mo
+      - avec RIFE  : le node produit 2N frames EN PLUS de l'entree -> ~2 * N * 11 Mo
+    `safety` couvre l'overhead ComfyUI + le buffer d'encodage ffmpeg.
+
+    Pur (aucune I/O) -> testable sans GPU."""
+    per_frame = width * height * 3 * 4  # float32 RGB
+    factor = 2 if with_rife else 1
+    return (num_frames * per_frame * factor * safety) / (1024 ** 3)
+
+
+def rife_decision(num_frames, max_frames_rife, avail_gb=None, width=720, height=1280):
+    """RIFE (interpolation 25->50fps) active ?
+
+    POURQUOI CETTE FONCTION A CHANGE (07/08/2026). Elle decidait sur le SEUL seuil de
+    frames (1305 ~ 50s), presente comme "max eprouve". La prod a demontre l'inverse :
+    entre le 03 et le 07/08, **60 % des generations echouaient** en rc=5 (ComfyUI
+    OOM-killed juste apres le sampling), et le taux d'echec suivait EXACTEMENT le
+    seuil : 74 % d'echec sur 45-55s (RIFE ON) contre 25 % au-dela de 62s (RIFE OFF).
+    Le seuil ne protegeait pas : il DESIGNAIT la zone de mort. La cause est que le
+    besoin RAM depend de la RAM REELLE du conteneur, qui varie d'une machine louee a
+    l'autre — un seuil de frames fixe ne peut pas l'exprimer.
+
+    On decide donc sur le BUDGET RAM mesure (cgroup-aware) quand il est lisible, et
+    on retombe sur un seuil de frames volontairement PRUDENT sinon. En cas de doute,
+    RIFE est coupee : le montage final MassContent est en 30 fps, le 50 fps y est de
+    toute facon re-echantillonne (benefice marginal) — alors qu'un OOM coute le pod
+    entier, son boot, et une re-generation complete.
+
+    Pur (aucune I/O) -> testable sans GPU."""
+    if num_frames > max_frames_rife:
+        return False
+    if avail_gb is None:
+        return True  # RAM illisible : seul le seuil (prudent) tranche
+    return avail_gb >= rife_ram_need_gb(num_frames, width, height, with_rife=True)
 
 
 def audio_is_usable(dur, min_sec):
@@ -184,15 +217,26 @@ def main():
     # montage) au-dela -> jamais d'OOM, quelle que soit la RAM du conteneur. La RAM
     # conteneur (cgroup-aware) est loggee pour l'observabilite/calibration. fp16 (node 20)
     # reduit en plus le pic RAM sur la plage ou RIFE reste active.
+    if os.environ.get("IT_FORCE_NO_RIFE") == "1" and a.rife:
+        # Repli du worker apres un crash ComfyUI : on rejoue le MEME job sans RIFE
+        # sur le pod deja chaud, au lieu de jeter le pod (et son boot de 40 min).
+        print("[gen] RIFE FORCEE A OFF (IT_FORCE_NO_RIFE=1, repli apres crash)", flush=True)
+        a.rife = 0
     if a.rife and a.rife > 1:
-        max_rife = int(os.environ.get("IT_RIFE_MAX_FRAMES") or "1305")  # ~50s : max eprouve avec RIFE
+        # Seuil de repli quand la RAM du conteneur est illisible. 750 frames = 30s :
+        # sous cette barre AUCUN echec RIFE n'a jamais ete observe. L'ancien defaut
+        # (1305) etait au contraire le coeur de la zone de mort (74 % d'echec).
+        max_rife = int(os.environ.get("IT_RIFE_MAX_FRAMES") or "750")
         avail = avail_ram_gb()
         availr = round(avail, 1) if avail is not None else "?"
-        if rife_decision(a.num_frames, max_rife):
-            print(f"[gen] RIFE active (frames={a.num_frames} <= {max_rife} ; RAM conteneur~{availr}Go)", flush=True)
+        need = round(rife_ram_need_gb(a.num_frames, a.width, a.height, with_rife=True), 1)
+        if rife_decision(a.num_frames, max_rife, avail, a.width, a.height):
+            print(f"[gen] RIFE active (frames={a.num_frames}, besoin~{need}Go, "
+                  f"RAM conteneur~{availr}Go, seuil={max_rife})", flush=True)
         else:
-            print(f"[gen] RIFE DESACTIVEE: frames={a.num_frames} > {max_rife} -> rendu 25fps "
-                  f"anti-OOM (final 30fps) ; RAM conteneur~{availr}Go", flush=True)
+            print(f"[gen] RIFE DESACTIVEE: frames={a.num_frames} (besoin~{need}Go > "
+                  f"RAM conteneur~{availr}Go, ou > seuil {max_rife}) -> rendu 25fps "
+                  f"anti-OOM (final 30fps)", flush=True)
             a.rife = 0
 
     graph = build_graph(a)

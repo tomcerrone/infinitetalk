@@ -50,6 +50,17 @@ start_comfyui(){
   for i in $(seq 1 80); do sleep 3; if curl -sf http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then log "COMFY_UP ($((i*3))s)"; return 0; fi; done
   log "WARN ComfyUI pas up après 240s"; return 1
 }
+
+# Mode RELANCE SEULE (appelé par worker.py quand ComfyUI est mort en cours de vie du
+# pod — typiquement OOM-killed en fin de génération). Sans ce mode, ComfyUI n'était
+# JAMAIS relancé : le pod restait allumé, continuait à réclamer des jobs et les faisait
+# tous échouer en ~2 min sur « Connection refused » (14 échecs de ce type mesurés en
+# prod du 03 au 07/08/2026). On relance seulement le serveur — pas de re-téléchargement,
+# pas de re-provisioning : tout est déjà sur le disque du pod.
+if [ "${1:-}" = "--restart-comfy" ]; then
+  log "relance ComfyUI seule (demandée par le worker)"
+  start_comfyui && { log "COMFY_RESTART_OK"; exit 0; } || { log "COMFY_RESTART_FAIL"; exit 1; }
+fi
 # Sentinel modèle de base (même fichier que --base-model de worker.py/generate.py
 # et que le dl section 4 — garder les 4 occurrences synchrones si on change de modèle).
 model_ok(){ local f="$COMFY/models/diffusion_models/Wan2_1-I2V-14B-720p_fp8_e4m3fn_scaled_KJ.safetensors"; [ -s "$f" ] && [ ! -f "$f.aria2" ]; }

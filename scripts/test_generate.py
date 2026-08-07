@@ -6,21 +6,41 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate as g
 
 
-def test_rife_on_under_threshold():
-    # Sous le seuil (videos courtes, plage eprouvee) -> RIFE conservee.
-    assert g.rife_decision(1105, 1305) is True   # ~45s
-    assert g.rife_decision(1305, 1305) is True   # ~50s (pile au seuil)
-
-
 def test_rife_off_above_threshold():
-    # Au-dela du seuil (videos longues) -> RIFE desactivee (anti-OOM, 25fps).
-    assert g.rife_decision(1377, 1305) is False  # ~52s
-    assert g.rife_decision(1500, 1305) is False  # ~60s (le cas qui OOM-killait)
+    # Au-dela du seuil de repli -> RIFE desactivee, quelle que soit la RAM annoncee.
+    assert g.rife_decision(1377, 750) is False   # ~55s
+    assert g.rife_decision(1500, 750, 999.0) is False  # RAM enorme mais > seuil
 
 
-def test_threshold_is_tunable():
-    # Le seuil est parametrable (env IT_RIFE_MAX_FRAMES) : remonter le seuil reactive RIFE.
-    assert g.rife_decision(1500, 1600) is True
+def test_rife_ram_aware_sous_le_seuil():
+    # Sous le seuil, c'est la RAM REELLE qui tranche (la lecon du 07/08 : un seuil de
+    # frames seul designait la zone de mort au lieu de la protéger).
+    besoin = g.rife_ram_need_gb(750, 720, 1280, with_rife=True)
+    assert g.rife_decision(750, 750, besoin + 1.0) is True    # marge -> on garde RIFE
+    assert g.rife_decision(750, 750, besoin - 1.0) is False   # trop juste -> on coupe
+
+
+def test_rife_ram_illisible_retombe_sur_le_seuil():
+    # RAM illisible (hors conteneur / cgroup masque) : seul le seuil prudent decide.
+    assert g.rife_decision(700, 750, None) is True
+    assert g.rife_decision(800, 750, None) is False
+
+
+def test_rife_ram_need_croit_avec_les_frames_et_rife():
+    # Le besoin est proportionnel aux frames, et RIFE le double (entree + sortie).
+    a = g.rife_ram_need_gb(1000, 720, 1280, with_rife=False)
+    b = g.rife_ram_need_gb(2000, 720, 1280, with_rife=False)
+    c = g.rife_ram_need_gb(1000, 720, 1280, with_rife=True)
+    assert abs(b - 2 * a) < 1e-9
+    assert abs(c - 2 * a) < 1e-9
+    # Ordre de grandeur mesure en prod : ~11 Mo par frame 720x1280 en float32.
+    assert 15.0 < a < 20.0  # 1000 frames sans RIFE, marge 1.6 comprise
+
+
+def test_rife_cas_reel_du_07_08_est_refuse():
+    # Le job qui a OOM-kill ComfyUI le 07/08 : 1305 frames, RIFE active, ~41 Go de RAM
+    # conteneur. L'ancienne regle disait OUI (1305 <= 1305). La nouvelle dit NON.
+    assert g.rife_decision(1305, 1305, 41.0) is False
 
 
 def test_avail_ram_gb_runs():
