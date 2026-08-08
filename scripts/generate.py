@@ -73,6 +73,24 @@ def rife_ram_need_gb(num_frames, width, height, with_rife, safety=1.6):
     return (num_frames * per_frame * factor * safety) / (1024 ** 3)
 
 
+def hard_ram_floor_gb(num_frames, width, height, runtime_gb=4.0):
+    """PLANCHER PHYSIQUE de RAM systeme, SANS marge : en dessous, la generation NE PEUT PAS
+    aboutir, quoi qu'il arrive.
+
+    POURQUOI (08/08/2026). Le manque de RAM ne se voyait qu'a la MORT du process, ~30 minutes
+    apres le demarrage — c'est-a-dire une machine deja louee, un boot deja paye, et un creneau
+    de publication deja perdu. Or la fin du graphe materialise TOUTES les images decodees en
+    memoire systeme : si le conteneur ne peut meme pas les contenir SANS marge, l'issue est
+    connue d'avance. Autant le dire tout de suite et rendre la machine.
+
+    Volontairement SANS le facteur de securite de `rife_ram_need_gb` : ce plancher ne sert pas
+    a decider si ca passe confortablement, il sert a refuser ce qui est IMPOSSIBLE. Un seuil
+    prudent refuserait des machines qui reussissent — et une generation refusee a tort coute
+    autant qu'une generation morte."""
+    images = num_frames * width * height * 3 * 4 / (1024 ** 3)  # float32 RGB, sans marge
+    return images + runtime_gb
+
+
 def rife_decision(num_frames, max_frames_rife, avail_gb=None, width=720, height=1280):
     """RIFE (interpolation 25->50fps) active ?
 
@@ -206,6 +224,30 @@ def main():
     if _src_dur and tgt < _src_dur - 0.5:
         print(f"[gen] WARN AUDIO TRONQUÉ: source={_src_dur}s -> video={tgt}s "
               f"({round(_src_dur - tgt, 1)}s perdus, cap num_frames={a.num_frames}/max_frames={a.max_frames})")
+
+    # ── LA MACHINE PEUT-ELLE SEULEMENT FAIRE CE TRAVAIL ? (08/08/2026) ──────────
+    # Mesure du 08/08 : 52 % des generations mouraient en 24 h, tuees par le manque de RAM du
+    # conteneur — TOUJOURS apres ~30 minutes de travail deja paye, et sans aucune trace
+    # d'exception (le process est tue net). Cause : on ne demandait AUCUNE RAM a la location,
+    # donc le fournisseur appliquait son defaut de 8 Go pour un travail qui en demande plus de
+    # 30. C'est corrige a la source (cote MassContent, `ram-budget.ts`), mais une machine trop
+    # petite peut toujours passer (repli en cas de penurie, ou fournisseur qui alloue moins).
+    #
+    # On le constate donc AVANT de commencer, et on rend la machine en quelques secondes au
+    # lieu de 30 minutes. Deux regles :
+    #   • RAM ILLISIBLE = on ne conclut RIEN et on tente (« fournisseur muet ⇒ pas de verdict ») ;
+    #   • on ne refuse que l'IMPOSSIBLE (plancher sans marge), jamais le « juste un peu court ».
+    _avail = avail_ram_gb()
+    _floor = hard_ram_floor_gb(a.num_frames, a.width, a.height)
+    _availr = round(_avail, 1) if _avail is not None else "?"
+    print(f"[gen] RAM conteneur~{_availr}Go, plancher physique~{round(_floor, 1)}Go "
+          f"pour {a.num_frames} images", flush=True)
+    if _avail is not None and _avail < _floor:
+        print(f"[gen] MACHINE TROP PETITE: {_availr}Go de RAM pour un travail qui en exige au "
+              f"moins {round(_floor, 1)}Go ({a.num_frames} images) -> abandon immediat (rc=6). "
+              f"Aucune chance d'aboutir : on rend la machine au lieu de payer 30 min pour rien.",
+              flush=True)
+        sys.exit(6)
 
     # ── Garde-fou anti-OOM RIFE (longues videos) ────────────────────────────────
     # RIFE (interpolation 25->50fps) est l'accumulateur n1 de RAM et la cause du SIGKILL

@@ -269,16 +269,24 @@ def run_generate(cmd, jid, t0, extra_env=None):
     # On garde DEUX faits, pas un : le nombre d'images (la charge) et la decision
     # d'interpolation (le facteur x2 de memoire). L'un sans l'autre ne suffit pas a
     # expliquer un manque de memoire.
-    ident = {"frames": "", "rife": "", "txt": ""}
+    # ── LA RAM DE LA MACHINE FAIT PARTIE DE L'IDENTITE DU RUN (08/08/2026) ──────
+    # Sans elle, un echec par manque de memoire etait indistinguable de n'importe quel
+    # autre : on lisait « le process est mort » sans jamais savoir avec combien de RAM il
+    # travaillait. C'est precisement le chiffre qui manquait pour prouver la cause (52 %
+    # d'echec mesure sur 24 h) et pour calibrer le plancher exige a la location.
+    ident = {"frames": "", "rife": "", "ram": "", "txt": ""}
 
     def _capture_identity(line):
         if "[gen] num_frames aligne=" in line and not ident["frames"]:
             ident["frames"] = line.split("num_frames aligne=", 1)[1].split(",", 1)[0].strip()
         elif "[gen] RIFE" in line and not ident["rife"]:
             ident["rife"] = "interpolation coupee" if "DESACTIVEE" in line or "FORCEE A OFF" in line else "interpolation active"
+        elif "[gen] RAM conteneur~" in line and not ident["ram"]:
+            ident["ram"] = "RAM " + line.split("RAM conteneur~", 1)[1].split(",", 1)[0].strip()
         else:
             return
-        bouts = [b for b in (f"{ident['frames']} images" if ident["frames"] else "", ident["rife"]) if b]
+        bouts = [b for b in (f"{ident['frames']} images" if ident["frames"] else "",
+                             ident["rife"], ident["ram"]) if b]
         ident["txt"] = " · ".join(bouts)[:120]
 
     HARD_KILL_S = 7200
