@@ -163,6 +163,16 @@ def claim():
     q = f"?provider={PROVIDER}"
     if GPU_NAME:
         q += "&gpu=" + urllib.parse.quote(GPU_NAME)
+    # ── L'IDENTITE DE LA MACHINE, DES LA RECLAMATION (08/08/2026) ──────────────
+    # Elle n'etait envoyee qu'au PREMIER BATTEMENT, ~45 s plus tard. Or c'est a la
+    # reclamation que le serveur rattache le travail a la session de la machine :
+    # sans identite a cet instant, le rattachement etait purement et simplement
+    # SAUTE. Mesure du 08/08 : 13 sessions de machine enregistrees, **zero travail
+    # rattache**, zero demarrage mesure, et 100 % de la facture comptee comme
+    # improductive — toute l'instrumentation posee la veille etait inerte, et
+    # l'alerte « machine allumee pour rien » criait en permanence.
+    if POD_ID:
+        q += "&podId=" + urllib.parse.quote(POD_ID)
     return http("GET", f"{MC_URL}/api/workers/runpod/claim{q}",
                 headers={"x-pipeline-secret": PIPELINE_SECRET})
 
