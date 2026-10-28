@@ -221,12 +221,27 @@ def test_worker_recolle_l_avancement_dans_la_note():
     w.HEARTBEAT_S = 0.2
     try:
         code = ("import time;print('[gen] num_frames aligne=1233, audio cale', flush=True);"
-                "print('[gen] PROGRESSION images=72/1233 (30s)', flush=True);time.sleep(1.2)")
+                "print('[gen] PROGRESSION images=216/1233 (300s) rythme=1.25s/image', flush=True);time.sleep(1.2)")
         rc, _ = w.run_generate([sys.executable, "-c", code], "job", time.time())
     finally:
         w.progress, w.HEARTBEAT_S = ancien_progress, ancien_hb
     assert rc == 0
-    assert any("avancement 72/1233 images" in n for n in notes), notes
+    assert any("avancement 216/1233 images en 300s, 1.25 s/image" in n for n in notes), notes
+
+
+def test_rythme_exclut_le_chargement_et_le_premier_essai():
+    # Premiere fenetre vue a 72 images apres 200 s (chargement des modeles compris), puis 216 images a 380 s :
+    # le rythme est (380 - 200) / (216 - 72) = 1,25 s/image — ni le chargement ni un essai precedent n'y entrent.
+    assert abs(g.rythme_de_generation((72, 200), (216, 380)) - 1.25) < 1e-9
+    # Moins d'une fenetre complete entre les deux observations : pas de rythme.
+    assert g.rythme_de_generation((72, 200), (100, 260)) is None
+    assert g.rythme_de_generation(None, (216, 380)) is None
+
+
+def test_note_d_avancement():
+    w = _worker()
+    assert w.note_d_avancement("[gen] PROGRESSION images=216/700 (300s) rythme=1.25s/image") == "216/700 images en 300s, 1.25 s/image"
+    assert w.note_d_avancement("[gen] PROGRESSION images=0/700 (40s)") == "0/700 images en 40s"
 
 
 def test_audio_usable_rejects_illisible_et_vide():

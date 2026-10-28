@@ -244,6 +244,21 @@ def progression_images(texte):
     return dernier
 
 
+def rythme_de_generation(premiere, actuelle, images_min=72):
+    """Secondes par image MESUREES entre deux observations de l'avancement : (el1 - el0) / (faites1 - faites0).
+
+    POURQUOI (28/10/2026, relecture) : diviser le temps ecoule par les images faites comptait le chargement des modeles
+    (recharges a chaque travail depuis `/free`) et, sur un rejeu sans interpolation, le temps du PREMIER essai — une
+    machine saine passait pour lente. Entre deux fenetres observees, seul l'echantillonnage compte. `None` tant que
+    l'ecart ne couvre pas une fenetre complete (72 images). Pur -> testable."""
+    if not premiere or not actuelle:
+        return None
+    (f0, t0), (f1, t1) = premiere, actuelle
+    if f1 - f0 < images_min or t1 <= t0:
+        return None
+    return (t1 - t0) / (f1 - f0)
+
+
 def taille_du_journal(path):
     """Taille actuelle d'un journal (octets), 0 si illisible."""
     try:
@@ -437,18 +452,25 @@ def main():
 
     t0 = time.time()
     first_err_t = None  # début d'une série CONTINUE d'erreurs de poll (ComfyUI injoignable)
-    derniere_lecture, derniere_progression = 0, None
+    derniere_lecture, derniere_progression, premiere_observation = 0, None, None
     while True:
         time.sleep(3)
         el = int(time.time() - t0)
         # AVANCEMENT EN IMAGES (28/10/2026), toutes les 30 s : ligne parsee par worker.py (note du battement) puis par
-        # MassContent (`machine-lente.ts`). Format : « [gen] PROGRESSION images=<faites>/<total> (<s>s) ».
+        # MassContent (`machine-lente.ts`). Format :
+        # « [gen] PROGRESSION images=<faites>/<total> (<s>s) [rythme=<r>s/image] » — <s> compte depuis l'envoi de CE
+        # passage (un rejeu repart de 0) ; le rythme, mesure entre la premiere fenetre vue et maintenant, exclut le
+        # chargement des modeles.
         if el - derniere_lecture >= 30:
             derniere_lecture = el
             faites = progression_images(fin_du_journal(journal_comfy, depuis=debut_journal))
             if faites is not None and faites != derniere_progression:
                 derniere_progression = faites
-                print(f"[gen] PROGRESSION images={faites}/{a.num_frames} ({el}s)", flush=True)
+                if premiere_observation is None:
+                    premiere_observation = (faites, el)
+                r = rythme_de_generation(premiere_observation, (faites, el))
+                suffixe = f" rythme={r:.2f}s/image" if r is not None else ""
+                print(f"[gen] PROGRESSION images={faites}/{a.num_frames} ({el}s){suffixe}", flush=True)
         # 7000s = maillon le plus serré de la chaîne de timeouts, et le plus PROPRE
         # (sortie rc=3 avec logs). Doit rester > durée max réelle d'une génération :
         # ~21min pour 45s d'audio sur 5090, ~2× sur GPU lent → 7000s couvre ~85s

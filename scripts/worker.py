@@ -192,6 +192,19 @@ def liberer_comfy():
         return False
 
 
+def note_d_avancement(ligne):
+    """« [gen] PROGRESSION images=X/N (Ts) rythme=Rs/image » -> « X/N images en Ts, R s/image » (sans rythme : « X/N
+    images en Ts »). Le temps est celui du PASSAGE de generation en cours (un rejeu repart de 0) : MassContent ne juge
+    une machine lente que sur le rythme, jamais sur le temps du travail. Pur -> testable."""
+    reste = ligne.split("images=", 1)[1]
+    images = reste.split(" ", 1)[0].strip()
+    t = reste.split("(", 1)[1].split("s)", 1)[0].strip() if "(" in reste and "s)" in reste else "?"
+    note = f"{images} images en {t}s"
+    if "rythme=" in reste:
+        note += f", {reste.split('rythme=', 1)[1].split('s/image', 1)[0].strip()} s/image"
+    return note
+
+
 def claim():
     # provider + GPU en query → MassContent tamponne le fournisseur ET le GPU effectif
     # du pod DÈS le claim (avant le 1er heartbeat) : chaque job porte son backend +
@@ -328,7 +341,7 @@ def run_generate(cmd, jid, t0, extra_env=None):
         # AVANCEMENT EN IMAGES (28/10/2026) : toujours le DERNIER, recolle a chaque battement (« avancement 432/1233
         # images ») — c'est sur lui que MassContent juge une machine trop lente (`machine-lente.ts`).
         if "[gen] PROGRESSION images=" in line:
-            ident["avancement"] = line.split("images=", 1)[1].split(" ", 1)[0].strip()
+            ident["avancement"] = note_d_avancement(line)
             return
         if "[gen] num_frames aligne=" in line and not ident["frames"]:
             ident["frames"] = line.split("num_frames aligne=", 1)[1].split(",", 1)[0].strip()
@@ -351,7 +364,7 @@ def run_generate(cmd, jid, t0, extra_env=None):
                 return
             suffixe = f" · {ident['txt']}" if ident["txt"] else ""
             if ident["avancement"]:
-                suffixe += f" · avancement {ident['avancement']} images"
+                suffixe += f" · avancement {ident['avancement']}"
             progress(jid, logsTail="\n".join(lines[-12:]),
                      note=f"génération {int(time.time()-t0)}s{suffixe}")
 
