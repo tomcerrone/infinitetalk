@@ -64,6 +64,9 @@ compilée sm_120 only. **Phase 2 (GPU non-Blackwell : 4090/A6000/L40S)** : l'orc
   Émet `[gen] DONE in Xs -> <chemin>` — **contrat parsé par worker.py**.
   Mémoire disponible = limite du conteneur − (utilisé − cache de fichiers rendable, lu dans
   `memory.stat`) ; détail journalisé (`[gen] RAM detail:`). Refus `rc=6` seulement sous le plancher physique.
+  Toutes les 30 s : `[gen] PROGRESSION images=<faites>/<total> (<s>s)` (début de la dernière fenêtre « Sampling audio
+  indices » du journal ComfyUI) — recollé par worker.py dans la note du battement (« avancement X/N images ») :
+  **contrat parsé par MassContent** (`machine-lente.ts`, coupe une machine 2,5× plus lente que la médiane de son offre).
 
 ### Env vars consommées par ce repo
 | Var | Script(s) | Rôle (défaut) |

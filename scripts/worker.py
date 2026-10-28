@@ -322,9 +322,14 @@ def run_generate(cmd, jid, t0, extra_env=None):
     # autre : on lisait « le process est mort » sans jamais savoir avec combien de RAM il
     # travaillait. C'est precisement le chiffre qui manquait pour prouver la cause (52 %
     # d'echec mesure sur 24 h) et pour calibrer le plancher exige a la location.
-    ident = {"frames": "", "rife": "", "ram": "", "txt": ""}
+    ident = {"frames": "", "rife": "", "ram": "", "txt": "", "avancement": ""}
 
     def _capture_identity(line):
+        # AVANCEMENT EN IMAGES (28/10/2026) : toujours le DERNIER, recolle a chaque battement (« avancement 432/1233
+        # images ») — c'est sur lui que MassContent juge une machine trop lente (`machine-lente.ts`).
+        if "[gen] PROGRESSION images=" in line:
+            ident["avancement"] = line.split("images=", 1)[1].split(" ", 1)[0].strip()
+            return
         if "[gen] num_frames aligne=" in line and not ident["frames"]:
             ident["frames"] = line.split("num_frames aligne=", 1)[1].split(",", 1)[0].strip()
         elif "[gen] RIFE" in line and not ident["rife"]:
@@ -345,6 +350,8 @@ def run_generate(cmd, jid, t0, extra_env=None):
                 p.kill()
                 return
             suffixe = f" · {ident['txt']}" if ident["txt"] else ""
+            if ident["avancement"]:
+                suffixe += f" · avancement {ident['avancement']} images"
             progress(jid, logsTail="\n".join(lines[-12:]),
                      note=f"génération {int(time.time()-t0)}s{suffixe}")
 

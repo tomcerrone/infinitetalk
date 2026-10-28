@@ -6,7 +6,7 @@ NB prod : les DEFAUTS argparse ci-dessous sont des valeurs de test — la pipeli
 prod verrouillee est definie par worker.py (GEN_ARGS) + README (commande de ref).
 La ligne "[gen] DONE in <s>s -> <path>" est PARSEE par worker.py : ne pas changer
 son format sans mettre worker.py a jour."""
-import argparse, json, os, subprocess, time, urllib.request, sys, uuid, math
+import argparse, json, os, re, subprocess, time, urllib.request, sys, uuid, math
 
 # 8188 = port lance par setup-prod.sh (start_comfyui) et expose par MassContent
 # (deployWorkerPod, ports "8188/http") — meme constante dans worker.py (COMFY).
@@ -217,6 +217,38 @@ def audio_is_usable(dur, min_sec):
     Pur -> testable sans GPU/ComfyUI."""
     return dur is not None and dur > 0 and dur >= min_sec
 
+_FENETRE_RE = re.compile(r"Sampling audio indices (\d+)-(\d+)")
+
+
+def progression_images(texte):
+    """Images DEJA generees, lues dans le journal de ComfyUI : le debut de la DERNIERE fenetre en cours.
+
+    Le noeud InfiniteTalk (ComfyUI-WanVideoWrapper, multitalk/multitalk_loop.py) genere la video par fenetres et
+    ouvre pour chacune une barre `tqdm(desc=f"Sampling audio indices {audio_start_idx}-{audio_end_idx}")` ;
+    `audio_start_idx` est un indice d'IMAGE (25 par seconde) : toutes les images avant lui sont faites.
+    None si aucune fenetre n'a commence. Pur -> testable sans ComfyUI.
+
+    POURQUOI (28/10/2026) : le serveur coupe une machine 2,5 fois plus lente que la mediane de son offre ; sans
+    avancement en images, il ne pouvait le constater qu'a la toute fin (des machines ont mis 100 a 110 min au lieu
+    d'environ 30)."""
+    dernier = None
+    for m in _FENETRE_RE.finditer(texte or ""):
+        dernier = int(m.group(1))
+    return dernier
+
+
+def fin_du_journal(path, octets=65536):
+    """Les derniers octets d'un journal (texte), '' si illisible."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            taille = f.tell()
+            f.seek(max(0, taille - octets))
+            return f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
 def build_graph(a):
     g = {
       "1": {"class_type":"WanVideoVAELoader","inputs":{"model_name":"Wan2_1_VAE_bf16.safetensors","precision":"bf16"}},
@@ -383,9 +415,18 @@ def main():
 
     t0 = time.time()
     first_err_t = None  # début d'une série CONTINUE d'erreurs de poll (ComfyUI injoignable)
+    derniere_lecture, derniere_progression = 0, None
     while True:
         time.sleep(3)
         el = int(time.time() - t0)
+        # AVANCEMENT EN IMAGES (28/10/2026), toutes les 30 s : ligne parsee par worker.py (note du battement) puis par
+        # MassContent (`machine-lente.ts`). Format : « [gen] PROGRESSION images=<faites>/<total> (<s>s) ».
+        if el - derniere_lecture >= 30:
+            derniere_lecture = el
+            faites = progression_images(fin_du_journal("/workspace/logs/comfyui.log"))
+            if faites is not None and faites != derniere_progression:
+                derniere_progression = faites
+                print(f"[gen] PROGRESSION images={faites}/{a.num_frames} ({el}s)", flush=True)
         # 7000s = maillon le plus serré de la chaîne de timeouts, et le plus PROPRE
         # (sortie rc=3 avec logs). Doit rester > durée max réelle d'une génération :
         # ~21min pour 45s d'audio sur 5090, ~2× sur GPU lent → 7000s couvre ~85s

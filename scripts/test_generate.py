@@ -1,7 +1,7 @@
 """Tests unitaires du garde-fou anti-OOM RIFE (generate.py).
 Run : python3 scripts/test_generate.py  (ni GPU ni ComfyUI requis ; generate.py
 n'execute main() que sous __main__, l'import est sans effet de bord)."""
-import os, sys
+import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate as g
 
@@ -175,6 +175,38 @@ def test_chaque_travail_libere_la_memoire_succes_ou_echec():
         for k, v in sauvegarde.items():
             setattr(w, k, v)
     assert appels["free"] == 2
+
+
+def test_progression_images_lit_la_derniere_fenetre():
+    # Journal reel de ComfyUI : des barres tqdm separees par des retours chariot, une par fenetre.
+    journal = ("Sampling 1233 frames in 17 windows, at 720x1280 with 4 steps\n"
+               "Sampling audio indices 0-81:  25%|##5       | 1/4 [00:20<01:00]\r"
+               "Sampling audio indices 0-81: 100%|##########| 4/4 [01:20<00:00]\n"
+               "Sampling audio indices 72-153:  50%|#####     | 2/4 [00:40<00:40]\r")
+    assert g.progression_images(journal) == 72
+    assert g.progression_images("rien encore") is None
+    assert g.progression_images("") is None
+
+
+def test_fin_du_journal_illisible():
+    assert g.fin_du_journal("/chemin/qui/n/existe/pas.log") == ""
+
+
+def test_worker_recolle_l_avancement_dans_la_note():
+    # Le worker capte la DERNIERE progression de generate.py et la recolle a chaque battement.
+    w = _worker()
+    notes = []
+    ancien_progress, ancien_hb = w.progress, w.HEARTBEAT_S
+    w.progress = lambda jid, **kw: notes.append(kw.get("note", ""))
+    w.HEARTBEAT_S = 0.2
+    try:
+        code = ("import time;print('[gen] num_frames aligne=1233, audio cale', flush=True);"
+                "print('[gen] PROGRESSION images=72/1233 (30s)', flush=True);time.sleep(1.2)")
+        rc, _ = w.run_generate([sys.executable, "-c", code], "job", time.time())
+    finally:
+        w.progress, w.HEARTBEAT_S = ancien_progress, ancien_hb
+    assert rc == 0
+    assert any("avancement 72/1233 images" in n for n in notes), notes
 
 
 def test_audio_usable_rejects_illisible_et_vide():
