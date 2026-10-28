@@ -87,13 +87,20 @@ def cache_fichiers_recuperable(stat):
 
 
 def ram_disponible_octets(limite, utilise, stat):
-    """Memoire que le conteneur peut encore obtenir = limite - (utilise - cache rendable).
+    """Memoire que le conteneur peut encore obtenir = limite - usage (cache COMPRIS).
     None si la limite ou l'usage est illisible (« pas de mesure ⇒ pas de verdict »).
-    Pur (aucune I/O) -> testable sans conteneur."""
+
+    Le cache des fichiers n'est PAS retire (relecture adverse du 28/10/2026) : le seuil de
+    refus (`hard_ram_floor_gb`) et la decision d'interpolation ne comptent pas la memoire
+    que les modeles vont prendre SUR LA MACHINE (offload) ; l'ancien calcul la couvrait par
+    hasard via le cache des ~33 Go de modeles. Retirer le cache laissait une machine
+    reellement trop petite accepter un travail puis tomber a court de memoire en fin de
+    generation. Le probleme du 2e travail est regle par la liberation de ComfyUI entre deux
+    travaux (`liberer_comfy`, worker.py). `cache_fichiers_recuperable` ne sert plus qu'au
+    DETAIL journalise. Pur (aucune I/O) -> testable sans conteneur."""
     if limite is None or utilise is None:
         return None
-    vraiment_pris = max(0, utilise - cache_fichiers_recuperable(stat))
-    return max(0, limite - vraiment_pris)
+    return max(0, limite - utilise)
 
 
 def mesure_ram():

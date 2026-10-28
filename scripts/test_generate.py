@@ -52,14 +52,16 @@ def test_avail_ram_gb_runs():
 GO = 1024 ** 3
 
 
-def test_ram_machine_chaude_compte_le_cache_comme_rendable():
-    # Le cas mesure en production : au 2e travail, limite 48 Go, `memory.current` 47,3 Go
-    # (dont 30 Go de cache des fichiers de modeles). L'ancien calcul (limite - usage)
-    # rendait 0,7 Go -> refus « MACHINE TROP PETITE ». Le cache est rendable : 30,7 Go.
+def test_ram_le_cache_reste_compte_comme_occupe():
+    # Relecture adverse du 28/10 : le seuil de refus ne compte pas la memoire des modeles
+    # (offload sur la machine) ; le cache des modeles la couvre. Retirer le cache laissait une
+    # machine trop petite accepter puis planter en fin de generation. Le 2e travail est regle
+    # par la liberation de ComfyUI entre deux travaux, pas par ce calcul.
+    # MUTATION QUI DOIT ROUGIR : retirer le cache rendable de l'usage.
     stat_v2 = {"anon": int(17.3 * GO), "file": 30 * GO, "active_file": 20 * GO,
                "inactive_file": 10 * GO, "file_dirty": 0, "file_writeback": 0, "shmem": 0}
     dispo = g.ram_disponible_octets(48 * GO, int(47.3 * GO), stat_v2)
-    assert abs(dispo / GO - 30.7) < 0.01
+    assert abs(dispo / GO - 0.7) < 0.01
 
 
 def test_ram_shmem_et_cache_sale_ne_sont_pas_rendables():
