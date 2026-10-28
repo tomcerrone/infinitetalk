@@ -34,29 +34,117 @@ def _read_int(path):
     except Exception:
         return None
 
-def avail_ram_gb():
-    """RAM reellement disponible (Go), CONTAINER-AWARE. /proc/meminfo seul voit la RAM
-    de l'HOTE, PAS la limite cgroup du conteneur GPU -> trompeur (on croit avoir 100+Go
-    alors que le conteneur est OOM-killed bien avant sa limite). On prend le MIN entre
-    (limite cgroup - usage) [v2 puis v1] et MemAvailable hote. None si rien de lisible.
-    Sert a l'OBSERVABILITE (la decision RIFE est par seuil de frames, plus fiable)."""
-    cands = []
+def _read_stat(path):
+    """Fichier `memory.stat` d'un cgroup -> {cle: octets}. {} si illisible."""
+    out = {}
+    try:
+        with open(path) as f:
+            for ln in f:
+                parts = ln.split()
+                if len(parts) == 2:
+                    try:
+                        out[parts[0]] = int(parts[1])
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return out
+
+
+def _premiere(stat, *cles):
+    for c in cles:
+        if c in stat:
+            return stat[c]
+    return 0
+
+
+def cache_fichiers_recuperable(stat):
+    """Octets de CACHE DE FICHIERS que le noyau peut reprendre a la demande, lus dans
+    `memory.stat`.
+
+    POURQUOI (28/10/2026). `memory.current` (cgroup v2) / `memory.usage_in_bytes` (v1)
+    compte TOUT ce que le conteneur occupe, y compris le cache des fichiers lus ou ecrits
+    (les 33 Go de modeles telecharges puis charges). Ce cache n'est pas de la memoire
+    PRISE : le noyau le rend des qu'un programme en a besoin. Le compter comme occupe
+    faisait croire a une machine deja chaude qu'il ne lui restait que 0,7 Go (mediane mesuree
+    au 2e travail, contre ~15 Go au 1er) -> refus « MACHINE TROP PETITE » a tort.
+
+    Doc officielle du noyau (Documentation/admin-guide/cgroup-v2.rst, « memory.stat ») :
+      - `file` : « Amount of memory used to cache filesystem data, including tmpfs and
+        shared memory » -> on ne le prend PAS tel quel : tmpfs / memoire partagee ne se
+        rendent pas sans swap ;
+      - `active_file` / `inactive_file` : les listes de pages ADOSSEES A DES FICHIERS ; la
+        memoire partagee n'y est pas (« shmem pages are on anon memory management lists ») ;
+      - `file_dirty` / `file_writeback` : cache modifie pas encore ecrit -> pas rendable tout
+        de suite, on le retire.
+    cgroup v1 : memes listes, prefixees `total_` (hierarchique) ; `dirty` / `writeback`.
+    Pur (aucune I/O) -> testable sans conteneur."""
+    actif = _premiere(stat, "total_active_file", "active_file")
+    inactif = _premiere(stat, "total_inactive_file", "inactive_file")
+    sale = _premiere(stat, "file_dirty", "total_dirty", "dirty")
+    en_ecriture = _premiere(stat, "file_writeback", "total_writeback", "writeback")
+    return max(0, actif + inactif - sale - en_ecriture)
+
+
+def ram_disponible_octets(limite, utilise, stat):
+    """Memoire que le conteneur peut encore obtenir = limite - (utilise - cache rendable).
+    None si la limite ou l'usage est illisible (« pas de mesure ⇒ pas de verdict »).
+    Pur (aucune I/O) -> testable sans conteneur."""
+    if limite is None or utilise is None:
+        return None
+    vraiment_pris = max(0, utilise - cache_fichiers_recuperable(stat))
+    return max(0, limite - vraiment_pris)
+
+
+def mesure_ram():
+    """Mesure de la memoire du conteneur, avec son DETAIL (octets) :
+    {"dispo": .., "limite": .., "utilise": .., "cache": .., "hote": ..} — chaque valeur
+    peut etre None. `dispo` = MIN entre la memoire du cgroup (v2 puis v1) et MemAvailable de
+    l'hote : /proc/meminfo seul voit l'HOTE, pas la limite du conteneur (trompeur)."""
+    hote = None
     try:
         with open("/proc/meminfo") as f:
             for ln in f:
                 if ln.startswith("MemAvailable:"):
-                    cands.append(int(ln.split()[1]) * 1024)  # kB -> octets
+                    hote = int(ln.split()[1]) * 1024  # kB -> octets (MemAvailable compte deja le cache)
                     break
     except Exception:
         pass
+    limite = utilise = cache = cgroup = mappe = None
     lim2, cur2 = _read_int("/sys/fs/cgroup/memory.max"), _read_int("/sys/fs/cgroup/memory.current")
     if lim2 is not None and cur2 is not None:
-        cands.append(max(0, lim2 - cur2))
-    lim1 = _read_int("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    cur1 = _read_int("/sys/fs/cgroup/memory/memory.usage_in_bytes")
-    if lim1 is not None and lim1 < (1 << 62) and cur1 is not None:  # < 2^62 = limite reelle (pas "unlimited")
-        cands.append(max(0, lim1 - cur1))
-    return min(cands) / (1024 ** 3) if cands else None
+        stat = _read_stat("/sys/fs/cgroup/memory.stat")
+        limite, utilise, cache = lim2, cur2, cache_fichiers_recuperable(stat)
+        mappe = stat.get("file_mapped")
+        cgroup = ram_disponible_octets(lim2, cur2, stat)
+    else:
+        lim1 = _read_int("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        cur1 = _read_int("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        if lim1 is not None and lim1 < (1 << 62) and cur1 is not None:  # < 2^62 = limite reelle (pas "unlimited")
+            stat = _read_stat("/sys/fs/cgroup/memory/memory.stat")
+            limite, utilise, cache = lim1, cur1, cache_fichiers_recuperable(stat)
+            mappe = stat.get("total_mapped_file", stat.get("mapped_file"))
+            cgroup = ram_disponible_octets(lim1, cur1, stat)
+    cands = [v for v in (hote, cgroup) if v is not None]
+    return {"dispo": min(cands) if cands else None, "limite": limite,
+            "utilise": utilise, "cache": cache, "mappe": mappe, "hote": hote}
+
+
+def detail_ram(m):
+    """Ligne lisible du detail de la mesure (Go), pour le journal du travail."""
+    def go(v):
+        return f"{round(v / (1024 ** 3), 1)}Go" if v is not None else "?"
+    return (f"limite={go(m.get('limite'))} utilise={go(m.get('utilise'))} "
+            f"dont cache rendable={go(m.get('cache'))} (projete en memoire={go(m.get('mappe'))}) "
+            f"hote={go(m.get('hote'))} "
+            f"-> dispo={go(m.get('dispo'))}")
+
+
+def avail_ram_gb():
+    """RAM reellement disponible (Go), CONTAINER-AWARE, cache de fichiers rendable compris
+    (voir `cache_fichiers_recuperable`). None si rien de lisible."""
+    d = mesure_ram()["dispo"]
+    return d / (1024 ** 3) if d is not None else None
 
 def rife_ram_need_gb(num_frames, width, height, with_rife, safety=1.6):
     """RAM systeme (Go) necessaire a la chaine PIXEL de fin de graphe.
@@ -237,11 +325,15 @@ def main():
     # lieu de 30 minutes. Deux regles :
     #   • RAM ILLISIBLE = on ne conclut RIEN et on tente (« fournisseur muet ⇒ pas de verdict ») ;
     #   • on ne refuse que l'IMPOSSIBLE (plancher sans marge), jamais le « juste un peu court ».
-    _avail = avail_ram_gb()
+    _mesure = mesure_ram()
+    _avail = _mesure["dispo"] / (1024 ** 3) if _mesure["dispo"] is not None else None
     _floor = hard_ram_floor_gb(a.num_frames, a.width, a.height)
     _availr = round(_avail, 1) if _avail is not None else "?"
+    # Format PARSE par worker.py (identite du run) et par MassContent (`ram-observee.ts`) :
+    # « RAM conteneur~<Go>Go, ... » — le detail part sur une ligne a part.
     print(f"[gen] RAM conteneur~{_availr}Go, plancher physique~{round(_floor, 1)}Go "
           f"pour {a.num_frames} images", flush=True)
+    print(f"[gen] RAM detail: {detail_ram(_mesure)}", flush=True)
     if _avail is not None and _avail < _floor:
         print(f"[gen] MACHINE TROP PETITE: {_availr}Go de RAM pour un travail qui en exige au "
               f"moins {round(_floor, 1)}Go ({a.num_frames} images) -> abandon immediat (rc=6). "

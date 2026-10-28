@@ -154,6 +154,44 @@ def restart_comfy():
         log("relance ComfyUI a échoué:", e)
     return wait_comfy(max_s=180)
 
+FREE_PAYLOAD = {"unload_models": True, "free_memory": True}
+
+
+def liberer_comfy():
+    """Vide ce que ComfyUI garde d'un travail a l'autre, AVANT le travail suivant.
+
+    POURQUOI (28/10/2026). Mesure en production sur 90 jours : le 2e travail d'une machine
+    reussit 11 fois sur 33, le 3e et les suivants 9 fois sur 24. ComfyUI garde en memoire
+    les SORTIES du dernier graphe (dont les milliers d'images decodees, ~11 Mo chacune) et
+    les modeles charges : au travail suivant, cette memoire est encore prise et la machine
+    se croit trop petite.
+
+    API officielle de ComfyUI (server.py, route `POST /free`) : corps JSON
+    `{"unload_models": bool, "free_memory": bool}`. La route pose des drapeaux sur la file ;
+    le fil d'execution (main.py, `prompt_worker`) les lit des qu'il est libre :
+    `unload_models` -> `comfy.model_management.unload_all_models()` ; `free_memory` ->
+    `PromptExecutor.reset()` (vide le cache des sorties), puis `gc.collect()` et
+    `soft_empty_cache()`. Les modeles se rechargent au travail suivant depuis le cache
+    disque (deja chaud) : quelques secondes, contre un refus ou un manque de memoire.
+
+    Best-effort : un ComfyUI sans cette route ou injoignable ne bloque rien (la garde
+    « pod empoisonne » de la boucle s'occupe d'un ComfyUI mort). Renvoie True si accepte."""
+    try:
+        req = urllib.request.Request(COMFY + "/free", data=json.dumps(FREE_PAYLOAD).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            ok = 200 <= r.status < 300
+        # Le fil d'execution traite les drapeaux des son reveil (sans attente : le
+        # ramasse-miettes part tout de suite apres un /free) ; on lui laisse le temps de
+        # rendre la memoire avant que la reclamation suivante ne mesure la machine.
+        time.sleep(5)
+        log("memoire de ComfyUI liberee (/free)")
+        return ok
+    except Exception as e:
+        log("liberation de la memoire de ComfyUI impossible:", e)
+        return False
+
+
 def claim():
     # provider + GPU en query → MassContent tamponne le fournisseur ET le GPU effectif
     # du pod DÈS le claim (avant le 1er heartbeat) : chaque job porte son backend +
@@ -520,6 +558,9 @@ def main():
                         os.remove(pth)
                     except OSError:
                         pass
+            # Chaque travail laisse la machine PROPRE pour le suivant (succes ET echec) :
+            # c'est ce qui permet a une machine deja allumee d'enchainer les videos.
+            liberer_comfy()
 
 if __name__ == "__main__":
     main()

@@ -57,9 +57,13 @@ compilée sm_120 only. **Phase 2 (GPU non-Blackwell : 4090/A6000/L40S)** : l'orc
   → complete (+ `durationMs` → costUsd). Heartbeat `/progress` sur thread dédié (45 s) avec
   logsTail. Auto-terminate après inactivité. Timeouts étagés : generate poll 5400 s <
   kill subprocess 7200 s < watchdog MassContent 180 min.
+  Après CHAQUE job (succès ou échec) : `POST /free` à ComfyUI (`unload_models` + `free_memory`)
+  pour que le job suivant trouve la machine propre (enchaînement de vidéos sur une machine chaude).
 - `generate.py` — soumet le graphe ComfyUI verrouillé (InfiniteTalk Single + LoRA lightx2v +
   RIFE). Aligne `num_frames` sur les fenêtres (81+72k) + pad l'audio (fix lip-sync de fin).
   Émet `[gen] DONE in Xs -> <chemin>` — **contrat parsé par worker.py**.
+  Mémoire disponible = limite du conteneur − (utilisé − cache de fichiers rendable, lu dans
+  `memory.stat`) ; détail journalisé (`[gen] RAM detail:`). Refus `rc=6` seulement sous le plancher physique.
 
 ### Env vars consommées par ce repo
 | Var | Script(s) | Rôle (défaut) |

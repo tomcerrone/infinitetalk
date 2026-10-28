@@ -49,6 +49,134 @@ def test_avail_ram_gb_runs():
     assert v is None or (isinstance(v, float) and v > 0)
 
 
+GO = 1024 ** 3
+
+
+def test_ram_machine_chaude_compte_le_cache_comme_rendable():
+    # Le cas mesure en production : au 2e travail, limite 48 Go, `memory.current` 47,3 Go
+    # (dont 30 Go de cache des fichiers de modeles). L'ancien calcul (limite - usage)
+    # rendait 0,7 Go -> refus « MACHINE TROP PETITE ». Le cache est rendable : 30,7 Go.
+    stat_v2 = {"anon": int(17.3 * GO), "file": 30 * GO, "active_file": 20 * GO,
+               "inactive_file": 10 * GO, "file_dirty": 0, "file_writeback": 0, "shmem": 0}
+    dispo = g.ram_disponible_octets(48 * GO, int(47.3 * GO), stat_v2)
+    assert abs(dispo / GO - 30.7) < 0.01
+
+
+def test_ram_shmem_et_cache_sale_ne_sont_pas_rendables():
+    # `file` contient tmpfs / memoire partagee (pas rendable sans swap) : on ne lit QUE les
+    # listes de fichiers ; et le cache modifie pas encore ecrit n'est pas rendable tout de suite.
+    stat = {"file": 12 * GO, "shmem": 4 * GO, "active_file": 6 * GO, "inactive_file": 2 * GO,
+            "file_dirty": 1 * GO, "file_writeback": 1 * GO}
+    assert g.cache_fichiers_recuperable(stat) == 6 * GO
+
+
+def test_ram_cgroup_v1_lit_les_cles_hierarchiques():
+    stat_v1 = {"total_active_file": 3 * GO, "total_inactive_file": 5 * GO, "total_dirty": 1 * GO,
+               "active_file": 99 * GO}
+    assert g.cache_fichiers_recuperable(stat_v1) == 7 * GO
+
+
+def test_ram_illisible_ne_conclut_rien():
+    assert g.ram_disponible_octets(None, 10 * GO, {}) is None
+    assert g.ram_disponible_octets(10 * GO, None, {}) is None
+    # Sans memory.stat lisible, on retombe sur limite - usage (jamais plus optimiste).
+    assert g.ram_disponible_octets(10 * GO, 4 * GO, {}) == 6 * GO
+    # Jamais negatif.
+    assert g.cache_fichiers_recuperable({"active_file": 1, "file_dirty": 5}) == 0
+
+
+def test_detail_ram_lisible():
+    txt = g.detail_ram({"dispo": 30 * GO, "limite": 48 * GO, "utilise": 47 * GO,
+                        "cache": 29 * GO, "hote": None})
+    assert "limite=48.0Go" in txt and "cache rendable=29.0Go" in txt and "hote=?" in txt
+
+
+def _worker():
+    os.environ.setdefault("MASSCONTENT_BASE_URL", "http://mc.invalid")
+    os.environ.setdefault("PIPELINE_SECRET", "test")
+    import worker as w
+    return w
+
+
+def test_liberer_comfy_appelle_la_route_officielle():
+    # POST /free {"unload_models": true, "free_memory": true} (ComfyUI server.py).
+    import http.server, threading, json as _json
+    recu = {}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            recu["path"] = self.path
+            recu["body"] = _json.loads(self.rfile.read(n) or b"{}")
+            self.send_response(200); self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.handle_request, daemon=True).start()
+    w = _worker()
+    ancien_comfy, ancien_sleep = w.COMFY, w.time.sleep
+    w.COMFY = f"http://127.0.0.1:{srv.server_address[1]}"
+    w.time.sleep = lambda s: None
+    try:
+        assert w.liberer_comfy() is True
+    finally:
+        w.COMFY, w.time.sleep = ancien_comfy, ancien_sleep
+        srv.server_close()
+    assert recu["path"] == "/free"
+    assert recu["body"] == {"unload_models": True, "free_memory": True}
+
+
+def test_liberer_comfy_injoignable_ne_bloque_rien():
+    w = _worker()
+    ancien = w.COMFY
+    w.COMFY = "http://127.0.0.1:9"  # port ferme
+    try:
+        assert w.liberer_comfy() is False
+    finally:
+        w.COMFY = ancien
+
+
+def test_chaque_travail_libere_la_memoire_succes_ou_echec():
+    # La boucle libere ComfyUI apres CHAQUE travail, meme en echec : c'est ce qui permet a
+    # une machine deja allumee d'enchainer les videos.
+    w = _worker()
+    appels = {"free": 0, "claims": 0}
+    sauvegarde = {k: getattr(w, k) for k in ("wait_comfy", "comfy_alive", "claim", "process",
+                                             "complete", "liberer_comfy")}
+
+    class Fin(BaseException):  # la boucle avale les Exception de la reclamation
+        pass
+
+    def claim():
+        appels["claims"] += 1
+        if appels["claims"] > 2:
+            raise Fin()
+        return {"job": {"jobId": f"j{appels['claims']}", "videoId": f"v{appels['claims']}"}}
+
+    def process(job):
+        if job["jobId"] == "j1":
+            raise RuntimeError("echec simule")
+        return ("k", "u", 1, 1.0)
+
+    w.wait_comfy = lambda max_s=900: True
+    w.comfy_alive = lambda timeout=5: True
+    w.claim = claim
+    w.process = process
+    w.complete = lambda payload: {}
+    w.liberer_comfy = lambda: appels.__setitem__("free", appels["free"] + 1) or True
+    try:
+        try:
+            w.main()
+        except Fin:
+            pass
+    finally:
+        for k, v in sauvegarde.items():
+            setattr(w, k, v)
+    assert appels["free"] == 2
+
+
 def test_audio_usable_rejects_illisible_et_vide():
     # None (ffprobe KO) ou <=0 -> rejete (rc=6), comportement historique conserve.
     assert g.audio_is_usable(None, 1.0) is False
