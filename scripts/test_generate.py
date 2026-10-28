@@ -192,6 +192,24 @@ def test_fin_du_journal_illisible():
     assert g.fin_du_journal("/chemin/qui/n/existe/pas.log") == ""
 
 
+def test_fin_du_journal_ignore_le_travail_precedent():
+    # ComfyUI ecrit a la suite d'un travail a l'autre : seul ce qui suit le debut de CE travail compte.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8") as f:
+        f.write("Sampling audio indices 1152-1233: 100%\n")
+        chemin = f.name
+    try:
+        debut = g.taille_du_journal(chemin)
+        assert g.progression_images(g.fin_du_journal(chemin, depuis=debut)) is None
+        with open(chemin, "a", encoding="utf-8") as f:
+            f.write("Sampling audio indices 0-81:  25%\r")
+        assert g.progression_images(g.fin_du_journal(chemin, depuis=debut)) == 0
+        # Journal recree plus court (ComfyUI relance) : relu depuis le debut.
+        assert g.progression_images(g.fin_du_journal(chemin, depuis=10 ** 9)) == 0
+    finally:
+        os.remove(chemin)
+
+
 def test_worker_recolle_l_avancement_dans_la_note():
     # Le worker capte la DERNIERE progression de generate.py et la recolle a chaque battement.
     w = _worker()

@@ -237,13 +237,26 @@ def progression_images(texte):
     return dernier
 
 
-def fin_du_journal(path, octets=65536):
-    """Les derniers octets d'un journal (texte), '' si illisible."""
+def taille_du_journal(path):
+    """Taille actuelle d'un journal (octets), 0 si illisible."""
+    try:
+        return os.path.getsize(path)
+    except Exception:
+        return 0
+
+
+def fin_du_journal(path, octets=65536, depuis=0):
+    """Les derniers octets d'un journal (texte) ecrits APRES `depuis`, '' si illisible.
+
+    ComfyUI tourne d'un travail a l'autre et ECRIT A LA SUITE dans le meme journal : sans `depuis` (la taille au debut
+    de CE travail), les fenetres du travail PRECEDENT passeraient pour l'avancement de celui-ci. Un journal plus court
+    que `depuis` (ComfyUI relance, journal recree) se relit depuis le debut."""
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             taille = f.tell()
-            f.seek(max(0, taille - octets))
+            debut = depuis if 0 <= depuis <= taille else 0
+            f.seek(max(debut, taille - octets))
             return f.read().decode("utf-8", errors="replace")
     except Exception:
         return ""
@@ -406,6 +419,8 @@ def main():
             a.rife = 0
 
     graph = build_graph(a)
+    journal_comfy = "/workspace/logs/comfyui.log"
+    debut_journal = taille_du_journal(journal_comfy)  # l'avancement ne lit que ce que CE travail ecrit
     cid = uuid.uuid4().hex
     print(f"[gen] POST /prompt (image={a.image} audio={a.audio} {a.width}x{a.height} steps={a.steps} frames={a.num_frames})")
     r = post_json(f"{SERVER}/prompt", {"prompt":graph, "client_id":cid})
@@ -423,7 +438,7 @@ def main():
         # MassContent (`machine-lente.ts`). Format : « [gen] PROGRESSION images=<faites>/<total> (<s>s) ».
         if el - derniere_lecture >= 30:
             derniere_lecture = el
-            faites = progression_images(fin_du_journal("/workspace/logs/comfyui.log"))
+            faites = progression_images(fin_du_journal(journal_comfy, depuis=debut_journal))
             if faites is not None and faites != derniere_progression:
                 derniere_progression = faites
                 print(f"[gen] PROGRESSION images={faites}/{a.num_frames} ({el}s)", flush=True)
