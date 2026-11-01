@@ -293,6 +293,63 @@ def download_asset(url, path, label):
         raise RuntimeError(f"download {label} echec rc={r.returncode}: {(r.stderr or '')[-300:]}")
 
 
+# ── DÉPÔT DE LA VIDÉO SUR S3 : RÉESSAI BORNÉ (2026-11-01) ───────────────────────────────
+# PROUVÉ côté MassContent (RunPodJob du 29/10 et du 01/11) : la vidéo générée (≈39 min de
+# GPU, ~0,53 $) était PERDUE sur une coupure passagère du réseau du pod au moment du PUT
+# (« upload S3 echec rc=6: curl: (6) Could not resolve host ») — le dépôt partait en UN essai.
+# Le PUT présigné est idempotent (il réécrit la même clé) : on le rejoue, seulement sur une
+# panne passagère — codes réseau de curl, ou HTTP 408 / 429 / 5xx — jamais sur un refus net
+# (403 signature expirée, 400…), au plus UPLOAD_ESSAIS fois, à intervalles croissants, dans le
+# budget de temps d'origine (960 s, le heartbeat d'upload tourne pendant tout ce temps).
+CURL_TRANSITOIRES = {5, 6, 7, 18, 28, 35, 52, 55, 56}
+UPLOAD_ESSAIS = 4
+UPLOAD_BUDGET_S = 960
+
+def depot_a_reessayer(rc, http_code):
+    """Le dépôt raté vaut-il un nouvel essai ? PURE."""
+    if rc == 0:
+        return False
+    if rc in CURL_TRANSITOIRES:
+        return True
+    # -f : une réponse HTTP >= 400 sort en rc=22 ; seul le code dit si c'est passager.
+    return rc == 22 and (http_code in (408, 429) or 500 <= http_code <= 599)
+
+def deposer_la_video(path, url, lancer=subprocess.run, dormir=time.sleep, horloge=time.time):
+    """PUT présigné de la vidéo, rejoué sur panne passagère. Rend le numéro de l'essai réussi ;
+    lève RuntimeError (« upload S3 echec rc=N … » / « upload S3 timeout … », formats relus par
+    MassContent `summarizeGpuError`) sinon."""
+    debut = horloge()
+    dernier = None
+    for essai in range(1, UPLOAD_ESSAIS + 1):
+        reste = UPLOAD_BUDGET_S - (horloge() - debut)
+        if reste <= 30:
+            break
+        try:
+            up = lancer(
+                ["curl", "-fsS", "--connect-timeout", "30", "--max-time", str(int(min(900, reste - 10))),
+                 "-o", "/dev/null", "-w", "%{http_code}",
+                 "-X", "PUT", "-H", "Content-Type: video/mp4",
+                 "--upload-file", path, url],
+                capture_output=True, text=True, timeout=reste,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"upload S3 timeout (>{UPLOAD_BUDGET_S}s) — PUT presigné bloqué")
+        if up.returncode == 0:
+            return essai
+        sortie = (up.stdout or "").strip()
+        http_code = int(sortie[-3:]) if sortie[-3:].isdigit() else 0
+        dernier = (up.returncode, http_code, (up.stderr or "")[-300:], essai)
+        if not depot_a_reessayer(up.returncode, http_code) or essai == UPLOAD_ESSAIS:
+            break
+        attente = min(5 * 2 ** (essai - 1), 30)
+        log(f"upload S3 essai {essai}/{UPLOAD_ESSAIS} raté (rc={up.returncode} http={http_code}) -> nouvel essai dans {attente}s")
+        dormir(attente)
+    if dernier is None:
+        raise RuntimeError(f"upload S3 timeout (>{UPLOAD_BUDGET_S}s) — PUT presigné bloqué")
+    rc, http_code, err, essai = dernier
+    raise RuntimeError(f"upload S3 echec rc={rc}: {err} (essai {essai}/{UPLOAD_ESSAIS}, http={http_code})")
+
+
 def run_generate(cmd, jid, t0, extra_env=None):
     """Lance generate.py, renvoie (returncode, lignes de sortie).
 
@@ -469,20 +526,11 @@ def process(job):
             progress(jid, note=f"upload S3 en cours {int(time.time() - t0)}s")
     threading.Thread(target=_upload_hb, daemon=True).start()
     try:
-        up = subprocess.run(
-            ["curl", "-fsS", "--connect-timeout", "30", "--max-time", "900",
-             "-X", "PUT", "-H", "Content-Type: video/mp4",
-             "--upload-file", path, job["uploadUrl"]],
-            capture_output=True, text=True, timeout=960,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("upload S3 timeout (>960s) — PUT presigné bloqué")
+        essai = deposer_la_video(path, job["uploadUrl"])
     finally:
         up_done.set()
-    if up.returncode != 0:
-        raise RuntimeError(f"upload S3 echec rc={up.returncode}: {up.stderr[-300:]}")
     url = job.get("outputUrl") or key
-    log(f"upload S3 OK -> {key}")
+    log(f"upload S3 OK -> {key} (essai {essai}/{UPLOAD_ESSAIS})")
     for pth in (img_path, aud_path, path):
         try:
             os.remove(pth)

@@ -29,7 +29,7 @@ impose de mettre à jour le `DOCKER_START_CMD` côté MassContent.
    publiquement, et seuls les logs (pas les assets clients PII) sont servis. Clone ce repo puis
    exécute `scripts/boot.sh`.
 3. **Chaîne sur le pod** : `boot.sh` → `setup-prod.sh` → `worker.py` → `generate.py` (détail ci-dessous).
-4. **Sortie** : upload S3 via **URL presignée PUT** fournie par MassContent au claim
+4. **Sortie** : upload S3 via **URL presignée PUT** fournie par MassContent au claim — rejoué sur panne passagère (codes réseau de curl, HTTP 408/429/5xx ; 4 essais au plus dans 960 s ; jamais sur un refus net), `deposer_la_video`, tests `scripts/test_worker_upload.py`
    (zéro credential AWS sur le pod), puis `/complete` → montage Remotion côté MassContent.
 
 ### Image custom (cold-start ~2× plus court)
