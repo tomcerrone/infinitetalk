@@ -159,12 +159,21 @@ def rife_ram_need_gb(num_frames, width, height, with_rife, safety=1.6):
     Modele mesure (720x1280) : chaque frame decodee est un tenseur IMAGE float32
     H*W*3*4 octets (~11 Mo). WanVideoDecode materialise les N frames, puis :
       - sans RIFE  : VHS_VideoCombine encode ces N frames         -> ~N * 11 Mo
-      - avec RIFE  : le node produit 2N frames EN PLUS de l'entree -> ~2 * N * 11 Mo
+      - avec RIFE  : le node produit 2N frames EN PLUS de l'entree -> ~3 * N * 11 Mo
     `safety` couvre l'overhead ComfyUI + le buffer d'encodage ffmpeg.
+
+    LES N FRAMES D'ENTREE COMPTENT (17/11/2026). Le facteur valait 2 : la sortie seule, alors que
+    l'entree reste en memoire pendant que le node ecrit ses 2N frames. Mesure en production
+    (90 jours, 14 generations de 729 frames avec RIFE active) : 8 echecs sur 8 avec 25 a 26 Go
+    de RAM disponible (l'ancien besoin, 25,7 Go, laissait passer a 0,4 Go pres ; ComfyUI etait
+    tue pendant l'interpolation, apres 35 minutes de generation payees), 6 reussites sur 6 avec
+    55 a 85 Go. A 3N le besoin est de 38,5 Go : RIFE est coupee sur les premieres, gardee sur
+    les secondes.
+    MUTATION QUI DOIT ROUGIR (test_generate.py, « cas reel du 14/11 ») : revenir au facteur 2.
 
     Pur (aucune I/O) -> testable sans GPU."""
     per_frame = width * height * 3 * 4  # float32 RGB
-    factor = 2 if with_rife else 1
+    factor = 3 if with_rife else 1
     return (num_frames * per_frame * factor * safety) / (1024 ** 3)
 
 

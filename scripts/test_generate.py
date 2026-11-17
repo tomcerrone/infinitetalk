@@ -27,12 +27,12 @@ def test_rife_ram_illisible_retombe_sur_le_seuil():
 
 
 def test_rife_ram_need_croit_avec_les_frames_et_rife():
-    # Le besoin est proportionnel aux frames, et RIFE le double (entree + sortie).
+    # Le besoin est proportionnel aux frames, et RIFE le triple (N d'entree + 2N de sortie).
     a = g.rife_ram_need_gb(1000, 720, 1280, with_rife=False)
     b = g.rife_ram_need_gb(2000, 720, 1280, with_rife=False)
     c = g.rife_ram_need_gb(1000, 720, 1280, with_rife=True)
     assert abs(b - 2 * a) < 1e-9
-    assert abs(c - 2 * a) < 1e-9
+    assert abs(c - 3 * a) < 1e-9
     # Ordre de grandeur mesure en prod : ~11 Mo par frame 720x1280 en float32.
     assert 15.0 < a < 20.0  # 1000 frames sans RIFE, marge 1.6 comprise
 
@@ -41,6 +41,16 @@ def test_rife_cas_reel_du_07_08_est_refuse():
     # Le job qui a OOM-kill ComfyUI le 07/08 : 1305 frames, RIFE active, ~41 Go de RAM
     # conteneur. L'ancienne regle disait OUI (1305 <= 1305). La nouvelle dit NON.
     assert g.rife_decision(1305, 1305, 41.0) is False
+
+
+def test_rife_cas_reel_du_14_11():
+    # Production, 14/11 : 729 frames, RIFE active, 25 a 26 Go de RAM disponible -> ComfyUI tue pendant
+    # l'interpolation, 8 fois sur 8 (8 machines louees pour rien). Les memes videos, le lendemain, avec
+    # 55 a 85 Go : 6 reussites sur 6. La regle doit couper RIFE sur les premieres et la garder sur les secondes.
+    for ram in (25.0, 26.0, 26.1):
+        assert g.rife_decision(729, 750, ram) is False
+    for ram in (55.3, 58.1, 84.7):
+        assert g.rife_decision(729, 750, ram) is True
 
 
 def test_avail_ram_gb_runs():
@@ -222,7 +232,7 @@ def test_worker_recolle_l_avancement_dans_la_note():
     try:
         code = ("import time;print('[gen] num_frames aligne=1233, audio cale', flush=True);"
                 "print('[gen] PROGRESSION images=216/1233 (300s) rythme=1.25s/image', flush=True);time.sleep(1.2)")
-        rc, _ = w.run_generate([sys.executable, "-c", code], "job", time.time())
+        rc, _, _ = w.run_generate([sys.executable, "-c", code], "job", time.time())
     finally:
         w.progress, w.HEARTBEAT_S = ancien_progress, ancien_hb
     assert rc == 0

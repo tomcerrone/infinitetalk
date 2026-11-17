@@ -70,6 +70,25 @@ def test_depot_a_reessayer():
     assert not w.depot_a_reessayer(0, 200) and not w.depot_a_reessayer(22, 403) and not w.depot_a_reessayer(22, 400)
 
 
+def test_repli_sans_rife_lit_le_fait_capte_pas_la_fin_du_journal():
+    # Une generation de plus de 25 minutes : la ligne « [gen] RIFE active » du debut est suivie de plus de 500
+    # lignes ; `run_generate` n'en garde que 500. Le repli doit quand meme savoir que l'interpolation etait active.
+    script = ("import sys\n"
+              "print('[gen] RIFE active (frames=729, besoin~25.7Go, RAM conteneur~26.1Go, seuil=750)')\n"
+              "for i in range(700): print(f'[gen] ... {i*3}s')\n"
+              "sys.exit(5)\n")
+    rc, lignes, rife_active = w.run_generate([sys.executable, "-c", script], "test", 0.0 + __import__("time").time())
+    assert rc == 5
+    assert len(lignes) <= 500 and not any("RIFE active" in l for l in lignes)  # le journal garde ne la porte plus
+    assert rife_active is True
+    assert w.repli_sans_rife(rc, rife_active) is True
+    # Interpolation deja coupee, ou autre code de sortie : pas de rejeu.
+    script_off = "import sys\nprint('[gen] RIFE DESACTIVEE: frames=1017')\nsys.exit(5)\n"
+    rc2, _, rife2 = w.run_generate([sys.executable, "-c", script_off], "test", __import__("time").time())
+    assert rc2 == 5 and rife2 is False and w.repli_sans_rife(rc2, rife2) is False
+    assert w.repli_sans_rife(3, True) is False and w.repli_sans_rife(0, True) is False
+
+
 if __name__ == "__main__":
     for nom, f in list(globals().items()):
         if nom.startswith("test_"):

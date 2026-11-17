@@ -444,7 +444,23 @@ def run_generate(cmd, jid, t0, extra_env=None):
     except subprocess.TimeoutExpired:
         p.kill()
         raise RuntimeError(f"generate.py timeout {HARD_KILL_S}s")
-    return p.returncode, lines
+    return p.returncode, lines, ident["rife"] == "interpolation active"
+
+
+def repli_sans_rife(rc, rife_active):
+    """Faut-il rejouer le meme travail SANS interpolation sur cette machine ?
+
+    POURQUOI CETTE FONCTION (17/11/2026). Le repli lisait « [gen] RIFE active » dans la sortie
+    gardee de generate.py — or `run_generate` n'en garde que les 500 dernieres lignes, et
+    generate.py en ecrit une toutes les 3 secondes : au-dela de 25 minutes, la ligne du DEBUT
+    n'y est plus. Mesure en production sur 90 jours : le repli n'a jamais ete tente, pas une
+    fois ; le 14/11, 8 machines sont tombees en fin d'interpolation apres 35 a 45 minutes et
+    ont toutes ete jetees. La decision d'interpolation est donc lue sur le fait CAPTE a la
+    sortie de la ligne (`ident`, rendu par `run_generate`), jamais dans la fin du journal.
+    MUTATION QUI DOIT ROUGIR (test_worker_upload.py, « repli ») : relire les lignes gardees.
+
+    Pur -> testable."""
+    return rc == 5 and bool(rife_active)
 
 
 def process(job):
@@ -466,7 +482,7 @@ def process(job):
            "--prefix", f"it_{vid}"] + GEN_ARGS
 
     t0 = time.time()
-    rc, lines = run_generate(cmd, jid, t0)
+    rc, lines, rife_active = run_generate(cmd, jid, t0)
     full = "\n".join(lines)
 
     # ── REPLI SANS RIFE (07/08/2026) ────────────────────────────────────────────
@@ -477,12 +493,12 @@ def process(job):
     # chance d'échouer), on relance ComfyUI et on REJOUE le MÊME job sans RIFE sur ce
     # pod déjà chaud. La vidéo sort en 25 fps — ré-échantillonnée à 30 fps au montage,
     # exactement comme toutes les vidéos longues le sont déjà aujourd'hui.
-    if rc == 5 and "[gen] RIFE active" in full:
+    if repli_sans_rife(rc, rife_active):
         log("crash ComfyUI avec RIFE active -> relance + 2e essai SANS RIFE (même pod)")
         progress(jid, note="ComfyUI a manqué de mémoire — nouvel essai sans interpolation",
                  logsTail="\n".join(lines[-12:]))
         if restart_comfy():
-            rc2, lines2 = run_generate(cmd, jid, t0, extra_env={"IT_FORCE_NO_RIFE": "1"})
+            rc2, lines2, _ = run_generate(cmd, jid, t0, extra_env={"IT_FORCE_NO_RIFE": "1"})
             if rc2 == 0:
                 log("2e essai sans RIFE : réussi")
             rc, lines = rc2, lines2
