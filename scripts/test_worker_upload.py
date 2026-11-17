@@ -74,7 +74,7 @@ def test_repli_sans_rife_lit_le_fait_capte_pas_la_fin_du_journal():
     # Une generation de plus de 25 minutes : la ligne « [gen] RIFE active » du debut est suivie de plus de 500
     # lignes ; `run_generate` n'en garde que 500. Le repli doit quand meme savoir que l'interpolation etait active.
     script = ("import sys\n"
-              "print('[gen] RIFE active (frames=729, besoin~25.7Go, RAM conteneur~26.1Go, seuil=750)')\n"
+              "print('[gen] RIFE active (frames=729, besoin~24.0Go, RAM conteneur~26.1Go, seuil=750)')\n"
               "for i in range(700): print(f'[gen] ... {i*3}s')\n"
               "sys.exit(5)\n")
     rc, lignes, rife_active = w.run_generate([sys.executable, "-c", script], "test", 0.0 + __import__("time").time())

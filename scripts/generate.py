@@ -165,9 +165,9 @@ def rife_ram_need_gb(num_frames, width, height, with_rife, safety=1.6):
     LES N FRAMES D'ENTREE COMPTENT (17/11/2026). Le facteur valait 2 : la sortie seule, alors que
     l'entree reste en memoire pendant que le node ecrit ses 2N frames. Mesure en production
     (90 jours, 14 generations de 729 frames avec RIFE active) : 8 echecs sur 8 avec 25 a 26 Go
-    de RAM disponible (l'ancien besoin, 25,7 Go, laissait passer a 0,4 Go pres ; ComfyUI etait
+    de RAM disponible (l'ancien besoin, 24,0 Go, laissait passer ; ComfyUI etait
     tue pendant l'interpolation, apres 35 minutes de generation payees), 6 reussites sur 6 avec
-    55 a 85 Go. A 3N le besoin est de 38,5 Go : RIFE est coupee sur les premieres, gardee sur
+    55 a 85 Go. A 3N le besoin est de 36,0 Go : RIFE est coupee sur les premieres, gardee sur
     les secondes.
     MUTATION QUI DOIT ROUGIR (test_generate.py, « cas reel du 14/11 ») : revenir au facteur 2.
 
