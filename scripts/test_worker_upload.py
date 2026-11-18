@@ -145,6 +145,93 @@ def test_rejouer_apres_liberation_relance_puis_rejoue_une_seule_fois():
     assert w.rejouer_apres_liberation(["x"], "j1", 0.0, 6, refus, False, 2, lancer=lancer, relancer=relancer, noter=noter_ko)[0] == 0
 
 
+def _boucle_simulee(travaux, generations):
+    """Fait tourner la VRAIE boucle `main` et le VRAI `process`, tout l'exterieur simule (reseau, ComfyUI, depot).
+    `travaux` : ce que /claim rend, dans l'ordre ; `generations` : ce que generate.py rend, dans l'ordre."""
+    import tempfile
+    sauvegarde = {n: getattr(w, n) for n in (
+        "MC_URL", "PIPELINE_SECRET", "IDLE_EXIT_S", "POLL_EMPTY_S", "TRAVAUX_SERVIS", "wait_comfy", "comfy_alive",
+        "restart_comfy", "claim", "complete", "progress", "self_terminate", "download_asset", "audio_seconds",
+        "deposer_la_video", "run_generate", "liberer_comfy")}
+    journal = {"complete": [], "notes": [], "relances": 0, "liberations": 0, "coupures": 0, "servis_vus": []}
+    dossier = tempfile.mkdtemp()
+    file = list(travaux)
+    gens = list(generations)
+
+    def claim():
+        return {"job": file.pop(0)} if file else {"job": None}
+
+    def run_generate(cmd, jid, t0, extra_env=None):
+        journal["servis_vus"].append(w.TRAVAUX_SERVIS)
+        rc, lignes = gens.pop(0)
+        # Chaque generation ecrit SA sortie (le vrai `process` l'efface apres le depot).
+        sortie = os.path.join(dossier, f"it_{len(journal['servis_vus'])}.mp4")
+        if rc == 0:
+            open(sortie, "wb").write(b"x")
+        return rc, [l.replace("SORTIE", sortie) for l in lignes], False
+
+    def restart_comfy():
+        journal["relances"] += 1
+        return True
+
+    try:
+        w.MC_URL, w.PIPELINE_SECRET = "http://localhost", "x"
+        w.IDLE_EXIT_S, w.POLL_EMPTY_S, w.TRAVAUX_SERVIS = 0, 0, 0
+        w.wait_comfy = lambda *a, **k: True
+        w.comfy_alive = lambda *a, **k: True
+        w.restart_comfy = restart_comfy
+        w.claim = claim
+        w.complete = lambda payload: journal["complete"].append(payload)
+        w.progress = lambda jid, **kw: journal["notes"].append(kw.get("note", ""))
+        w.self_terminate = lambda: journal.__setitem__("coupures", journal["coupures"] + 1)
+        w.download_asset = lambda url, path, label: None
+        w.audio_seconds = lambda path: 6.0
+        w.deposer_la_video = lambda path, url, **k: 1
+        w.run_generate = run_generate
+        w.liberer_comfy = lambda: journal.__setitem__("liberations", journal["liberations"] + 1)
+        w.main()
+        journal["servis_fin"] = w.TRAVAUX_SERVIS
+    finally:
+        for n, v in sauvegarde.items():
+            setattr(w, n, v)
+        __import__("shutil").rmtree(dossier, ignore_errors=True)
+    return journal
+
+
+def _travail(n):
+    return {"jobId": f"j{n}", "videoId": f"v{n}", "imageUrl": "i", "audioUrl": "a", "outputKey": f"k{n}", "uploadUrl": "u"}
+
+
+REFUS = (6, ["[gen] MACHINE TROP PETITE: 11.5Go de RAM pour un travail qui en exige au moins 13.7Go (945 images)"])
+REUSSITE = (0, ["[gen] DONE in 12s -> SORTIE"])
+
+
+def test_la_boucle_compte_les_travaux_et_rejoue_un_refus_de_memoire_sur_machine_deja_servie():
+    # Le rejeu du 18/11 : deux videos livrees, la troisieme refusee faute de memoire puis reussie apres relance.
+    j = _boucle_simulee([_travail(1), _travail(2), _travail(3)], [REUSSITE, REUSSITE, REFUS, REUSSITE])
+    assert [c["status"] for c in j["complete"]] == ["completed", "completed", "completed"]
+    assert j["relances"] == 1
+    assert any("memoire non rendue" in n for n in j["notes"])
+    # Le compteur que lit la regle : 0 au premier travail, 1 au deuxieme, 2 au troisieme (et a son rejeu).
+    assert j["servis_vus"] == [0, 1, 2, 2] and j["servis_fin"] == 3
+    # La machine est liberee apres CHAQUE travail, puis s'eteint d'elle-meme a l'inactivite.
+    assert j["liberations"] == 3 and j["coupures"] == 1
+
+
+def test_la_boucle_ne_rejoue_pas_le_refus_d_une_machine_neuve():
+    # Premier travail de la machine refuse : elle est vraiment trop petite — echec remonte, aucune relance.
+    j = _boucle_simulee([_travail(1)], [REFUS])
+    assert [c["status"] for c in j["complete"]] == ["failed"]
+    assert j["relances"] == 0 and j["servis_fin"] == 1 and j["liberations"] == 1
+
+
+def test_la_boucle_remonte_l_echec_quand_le_rejeu_est_refuse_lui_aussi():
+    # La memoire n'etait pas en cause : UN seul rejeu, puis l'echec part comme avant.
+    j = _boucle_simulee([_travail(1), _travail(2)], [REUSSITE, REFUS, REFUS])
+    assert [c["status"] for c in j["complete"]] == ["completed", "failed"]
+    assert j["relances"] == 1 and "rc=6" in j["complete"][1]["error"]
+
+
 if __name__ == "__main__":
     for nom, f in list(globals().items()):
         if nom.startswith("test_"):
