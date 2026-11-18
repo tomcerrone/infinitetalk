@@ -490,7 +490,7 @@ def rejouer_apres_liberation(cmd, jid, t0, rc, lines, rife_active, travaux_servi
     plancher de memoire releve, pour une machine qui n'etait pas trop petite : ComfyUI n'avait pas rendu la memoire
     (`liberer_comfy` attend 5 s, sans garantie). Relancer ComfyUI la rend a coup sur (~1 min, modeles deja en cache).
     Le resultat se lit dans le journal du travail : la note « memoire non rendue », puis sa reussite ou son refus.
-    Renvoie (rc, lines, rife_active) : ceux du rejeu s'il a eu lieu, sinon ceux recus. Ne leve pas."""
+    Renvoie (rc, lines, rife_active) : ceux du rejeu s'il a eu lieu, sinon ceux recus. Ne leve rien de plus que `lancer`."""
     lancer = lancer or run_generate
     relancer = relancer or restart_comfy
     noter = noter or progress
