@@ -463,6 +463,51 @@ def repli_sans_rife(rc, rife_active):
     return rc == 5 and bool(rife_active)
 
 
+# Phrase par laquelle generate.py refuse un travail faute de memoire (son `sys.exit(6)`). Tenue par un test : les
+# deux fichiers changent ensemble.
+REFUS_MEMOIRE = "MACHINE TROP PETITE"
+
+# Travaux deja traites par CETTE machine (reussis ou non) : tenu par la boucle principale.
+TRAVAUX_SERVIS = 0
+
+
+def rejeu_apres_liberation(rc, lines, travaux_servis):
+    """Faut-il relancer ComfyUI et rejouer le travail ? Oui si generate.py vient de le REFUSER faute de memoire
+    (rc=6 + sa phrase) sur une machine qui a DEJA traite un travail. Sur une machine neuve, le refus est vrai : la
+    machine est trop petite, rien a rejouer. Pur -> testable."""
+    return rc == 6 and travaux_servis > 0 and any(REFUS_MEMOIRE in l for l in lines)
+
+
+def rejouer_apres_liberation(cmd, jid, t0, rc, lines, rife_active, travaux_servis,
+                             lancer=None, relancer=None, noter=None):
+    """UN rejeu, sur une machine remise a neuf, quand la memoire du travail precedent n'a pas ete rendue.
+
+    POURQUOI (18/11/2026) — HYPOTHESE « memoire pas encore rendue », a retirer si elle est fausse. Releve en
+    production : une machine de 57,7 Go venait de livrer trois videos ; six secondes apres la fin de la troisieme
+    (un travail court, interpolation active), la quatrieme a mesure 11,5 Go disponibles (46,2 Go occupes, dont
+    seulement 16,0 Go de cache) et a ete REFUSEE — alors que les trois precedentes avaient demarre a 25,5, 23,2 et
+    25,2 Go. Le refus a coute un essai de la video, la machine (coupee sur l'echec) et une relocation avec un
+    plancher de memoire releve, pour une machine qui n'etait pas trop petite : ComfyUI n'avait pas rendu la memoire
+    (`liberer_comfy` attend 5 s, sans garantie). Relancer ComfyUI la rend a coup sur (~1 min, modeles deja en cache).
+    Le resultat se lit dans le journal du travail : la note « memoire non rendue », puis sa reussite ou son refus.
+    Renvoie (rc, lines, rife_active) : ceux du rejeu s'il a eu lieu, sinon ceux recus. Ne leve pas."""
+    lancer = lancer or run_generate
+    relancer = relancer or restart_comfy
+    noter = noter or progress
+    if not rejeu_apres_liberation(rc, lines, travaux_servis):
+        return rc, lines, rife_active
+    log("refus faute de memoire sur une machine qui a deja travaille -> relance de ComfyUI + rejeu (meme pod)")
+    try:
+        noter(jid, note="memoire non rendue par le travail precedent — moteur relance, nouveau depart",
+              logsTail="\n".join(lines[-12:]))
+    except Exception as e:
+        log("note du rejeu impossible:", e)
+    if not relancer():
+        log("ComfyUI n'est pas reparti -> pas de rejeu")
+        return rc, lines, rife_active
+    return lancer(cmd, jid, t0)
+
+
 def process(job):
     vid = job["videoId"]
     jid = job["jobId"]
@@ -483,6 +528,8 @@ def process(job):
 
     t0 = time.time()
     rc, lines, rife_active = run_generate(cmd, jid, t0)
+    # Refuse faute de memoire sur une machine qui a deja travaille : UN rejeu apres relance de ComfyUI.
+    rc, lines, rife_active = rejouer_apres_liberation(cmd, jid, t0, rc, lines, rife_active, TRAVAUX_SERVIS)
     full = "\n".join(lines)
 
     # ── REPLI SANS RIFE (07/08/2026) ────────────────────────────────────────────
@@ -644,6 +691,8 @@ def main():
                         pass
             # Chaque travail laisse la machine PROPRE pour le suivant (succes ET echec) :
             # c'est ce qui permet a une machine deja allumee d'enchainer les videos.
+            global TRAVAUX_SERVIS
+            TRAVAUX_SERVIS += 1
             liberer_comfy()
 
 if __name__ == "__main__":

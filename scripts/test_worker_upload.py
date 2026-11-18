@@ -89,6 +89,62 @@ def test_repli_sans_rife_lit_le_fait_capte_pas_la_fin_du_journal():
     assert w.repli_sans_rife(3, True) is False and w.repli_sans_rife(0, True) is False
 
 
+def test_rejeu_apres_liberation_seulement_sur_une_machine_qui_a_deja_travaille():
+    refus = ["[gen] RAM detail: limite=57.7Go utilise=46.2Go dont cache rendable=16.0Go -> dispo=11.5Go",
+             "[gen] MACHINE TROP PETITE: 11.5Go de RAM pour un travail qui en exige au moins 13.7Go (945 images)"]
+    # Le cas releve le 18/11 : 4e travail d'une machine qui en avait livre trois.
+    assert w.rejeu_apres_liberation(6, refus, 3) is True
+    # Machine neuve : le refus est vrai, rien a rejouer.
+    assert w.rejeu_apres_liberation(6, refus, 0) is False
+    # rc=6 pour une autre raison (audio trop court), ou un autre code : pas de rejeu.
+    assert w.rejeu_apres_liberation(6, ["[gen] audio trop court -> abandon (rc=6)"], 3) is False
+    assert w.rejeu_apres_liberation(5, refus, 3) is False and w.rejeu_apres_liberation(0, refus, 3) is False
+
+
+def test_la_phrase_du_refus_est_celle_que_generate_imprime():
+    # Les deux fichiers changent ensemble : sans la phrase dans generate.py, le rejeu ne se declencherait plus jamais.
+    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "generate.py"), encoding="utf-8").read()
+    assert ("[gen] " + w.REFUS_MEMOIRE + ":") in source
+    assert "sys.exit(6)" in source
+
+
+def test_rejouer_apres_liberation_relance_puis_rejoue_une_seule_fois():
+    refus = ["[gen] MACHINE TROP PETITE: 11.5Go de RAM pour un travail qui en exige au moins 13.7Go"]
+    appels = {"relance": 0, "lance": 0, "notes": []}
+
+    def relancer():
+        appels["relance"] += 1
+        return True
+
+    def lancer(cmd, jid, t0):
+        appels["lance"] += 1
+        return 0, ["[gen] DONE in 12s -> /tmp/x.mp4"], False
+
+    def noter(jid, **kw):
+        appels["notes"].append(kw.get("note", ""))
+
+    rc, lignes, rife = w.rejouer_apres_liberation(["x"], "j1", 0.0, 6, refus, False, 3, lancer=lancer, relancer=relancer, noter=noter)
+    assert (rc, rife) == (0, False) and "DONE in" in lignes[0]
+    assert appels["relance"] == 1 and appels["lance"] == 1
+    assert "memoire non rendue" in appels["notes"][0]
+
+    # ComfyUI ne repart pas : aucun rejeu, le refus est rendu tel quel.
+    appels.update(relance=0, lance=0)
+    rc, lignes, _ = w.rejouer_apres_liberation(["x"], "j1", 0.0, 6, refus, False, 3, lancer=lancer, relancer=lambda: False, noter=noter)
+    assert rc == 6 and lignes is refus and appels["lance"] == 0
+
+    # Machine neuve, ou travail reussi : rien n'est relance ni rejoue.
+    appels.update(relance=0, lance=0)
+    assert w.rejouer_apres_liberation(["x"], "j1", 0.0, 6, refus, False, 0, lancer=lancer, relancer=relancer, noter=noter)[0] == 6
+    assert w.rejouer_apres_liberation(["x"], "j1", 0.0, 0, ["ok"], True, 3, lancer=lancer, relancer=relancer, noter=noter) == (0, ["ok"], True)
+    assert appels["relance"] == 0 and appels["lance"] == 0
+
+    # Une note impossible (reseau) n'empeche pas le rejeu.
+    def noter_ko(jid, **kw):
+        raise RuntimeError("reseau")
+    assert w.rejouer_apres_liberation(["x"], "j1", 0.0, 6, refus, False, 2, lancer=lancer, relancer=relancer, noter=noter_ko)[0] == 0
+
+
 if __name__ == "__main__":
     for nom, f in list(globals().items()):
         if nom.startswith("test_"):
